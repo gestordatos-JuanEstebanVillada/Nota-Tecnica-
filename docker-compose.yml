@@ -1,0 +1,39 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: nota-tecnica-backend
+    restart: unless-stopped
+    ports:
+      - "4296:4296"
+    env_file:
+      - .env
+    environment:
+      DB_HOST: "160.2.1.79"
+      DB_PORT: "1521"
+      DB_SERVICE: Ligapru
+      DB_USER: onco
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:-liga_cancer_nota_tecnica_2026_secret}
+    networks:
+      - nota-tecnica-net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    container_name: nota-tecnica-frontend
+    restart: unless-stopped
+    ports:
+      - "3924:3924"
+    depends_on:
+      - backend
+    networks:
+      - nota-tecnica-net
+
+networks:
+  nota-tecnica-net:
+    driver: bridge

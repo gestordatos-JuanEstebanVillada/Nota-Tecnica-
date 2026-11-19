@@ -1,0 +1,8 @@
+# Secretos Docker Compose (raíz del monorepo)
+.env
+.env.*
+!.env.example
+
+# SO
+.DS_Store
+Thumbs.db

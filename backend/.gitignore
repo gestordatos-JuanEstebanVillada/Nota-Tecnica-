@@ -1,0 +1,51 @@
+# Bytecode y caché Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+.Python
+
+# Distribución / empaquetado
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Variables de entorno (Oracle, JWT, etc.)
+.env
+.env.*
+!.env.example
+
+# Tests y linters
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Archivos temporales de importación Excel
+uploads/
+tmp/
+temp/
+
+# Logs
+*.log
+
+# Jupyter / IPython
+.ipynb_checkpoints/
+
+# SO y editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
