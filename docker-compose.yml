@@ -10,12 +10,11 @@ services:
     env_file:
       - .env
     environment:
-      DB_HOST: "160.2.1.79"
-      DB_PORT: "1521"
-      DB_SERVICE: Ligapru
-      DB_USER: onco
-      DB_PASSWORD: ${DB_PASSWORD:-}
-      SCSE_DB_PASSWD: ${SCSE_DB_PASSWD:-${DB_PASSWORD}}
+      SCSE_DB_USER: ${SCSE_DB_USER:-BDLIGA}
+      SCSE_DB_PASSWD: ${SCSE_DB_PASSWD:-scse}
+      SCSE_DB_IP: ${SCSE_DB_IP:-160.1.1.99}
+      SCSE_DB_PORT: ${SCSE_DB_PORT:-1521}
+      SCSE_DB_DATABASE: ${SCSE_DB_DATABASE:-scse}
       JWT_SECRET: ${JWT_SECRET:-liga_cancer_nota_tecnica_2026_secret}
     networks:
       - nota-tecnica-net
