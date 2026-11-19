@@ -3,6 +3,35 @@ import logoLiga from "../IMG/logo.png";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
+/** Lee cuerpo de respuesta HTTP; si no es JSON, devuelve mensaje legible con código de estado. */
+async function parseApiResponse(res) {
+  const contentType = (res.headers.get("content-type") || "").toLowerCase();
+  const raw = await res.text();
+  if (!raw) {
+    return { ok: res.ok, data: null, raw: "", parseError: null };
+  }
+  if (contentType.includes("application/json") || raw.trim().startsWith("{")) {
+    try {
+      return { ok: res.ok, data: JSON.parse(raw), raw, parseError: null };
+    } catch (parseError) {
+      return { ok: res.ok, data: null, raw, parseError };
+    }
+  }
+  return { ok: res.ok, data: null, raw, parseError: null };
+}
+
+function mensajeErrorHttp(res, raw, data) {
+  if (data?.detail) {
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail)) {
+      return data.detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+    }
+    return JSON.stringify(data.detail);
+  }
+  const cuerpo = (raw || "").trim().slice(0, 280);
+  return cuerpo || `Error del servidor (HTTP ${res.status})`;
+}
+
 const formatCOP = (val) =>
   new Intl.NumberFormat("es-CO", {
     style: "currency",
@@ -139,8 +168,12 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ usuario: usuarioInput, password: passwordInput }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Error al iniciar sesión");
+      const { data, raw, parseError } = await parseApiResponse(res);
+      if (parseError) {
+        throw new Error(`Respuesta inválida del servidor (HTTP ${res.status}). ${raw.slice(0, 120)}`);
+      }
+      if (!res.ok) throw new Error(mensajeErrorHttp(res, raw, data));
+      if (!data?.access_token) throw new Error("El servidor no devolvió un token de sesión.");
       localStorage.setItem("nt_token", data.access_token);
       localStorage.setItem("nt_user", JSON.stringify(data.user));
       setToken(data.access_token);

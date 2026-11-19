@@ -4,12 +4,12 @@ import traceback
 from datetime import date
 from typing import List, Optional
 import oracledb
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from database import get_connection
+from database import get_connection, oracle_config_status
 from auth import router as auth_router, get_current_user
 from excel_service import parsear_excel_nota_tecnica, generar_excel_nota_tecnica
 
@@ -24,6 +24,23 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if not isinstance(detail, (str, type(None))):
+            detail = str(detail)
+        return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+    traceback.print_exc()
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
+
+
+@app.get("/api/health")
+def health_check():
+    cfg = oracle_config_status()
+    return {"status": "ok", "oracle": cfg}
 
 
 class DetalleUpdate(BaseModel):

@@ -1,5 +1,7 @@
 import os
 import hashlib
+import traceback
+
 import jwt
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends
@@ -46,9 +48,11 @@ def verificar_password(plain_password: str, stored_password: str) -> bool:
 
 @router.post("/login")
 def login(data: LoginRequest):
-    conn = get_connection()
-    cur = conn.cursor()
+    conn = None
+    cur = None
     try:
+        conn = get_connection()
+        cur = conn.cursor()
         cur.execute(
             """
             SELECT ID, USUARIO, CONTRASENA, NOMBRES, ID_CLASE, ESTADO, ID_AREA, PORTAL_ROL
@@ -102,9 +106,16 @@ def login(data: LoginRequest):
                 "rol": rol_final,
             },
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
-        cur.close()
-        conn.close()
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
 
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
