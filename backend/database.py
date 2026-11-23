@@ -48,3 +48,24 @@ def get_connection():
         raise RuntimeError(
             f"No se pudo conectar a Oracle ({SCSE_DB_USER}@{SCSE_DB_IP}:{SCSE_DB_PORT}/{SCSE_DB_DATABASE}): {exc}"
         ) from exc
+
+
+def asegurar_columna_observacion():
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM USER_TAB_COLUMNS
+            WHERE TABLE_NAME = 'NT_DETALLE_CUPS'
+              AND COLUMN_NAME = 'OBSERVACION'
+            """
+        )
+        existe = cur.fetchone()[0] > 0
+        if not existe:
+            cur.execute("ALTER TABLE NT_DETALLE_CUPS ADD (OBSERVACION VARCHAR2(4000))")
+            conn.commit()
+    finally:
+        cur.close()
+        conn.close()

@@ -117,7 +117,9 @@ export default function App() {
     descripcion: "",
     frecuencia_anual: 0,
     costo_medio_evento: 0,
+    observacion: "",
   });
+  const [modalObs, setModalObs] = useState(null);
 
   const [vistaActiva, setVistaActiva] = useState("NOTA_TECNICA");
   const anioActual = new Date().getFullYear();
@@ -383,6 +385,40 @@ export default function App() {
     }
   };
 
+  const handleGuardarObservacion = async (e) => {
+    e.preventDefault();
+    if (!modalObs) return;
+    setModalObs((prev) => ({ ...prev, guardando: true }));
+    try {
+      const res = await fetch(`${API_URL}/detalle-cups/${modalObs.det.id_detalle}/observacion`, {
+        method: "PATCH",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ observacion: modalObs.textoObs }),
+      });
+      const { data, raw } = await parseApiResponse(res);
+      if (!res.ok) throw new Error(mensajeErrorHttp(res, raw, data));
+      setNota((prev) => ({
+        ...prev,
+        agrupadores: prev.agrupadores.map((agr) =>
+          agr.id_agrupador !== modalObs.idAgrupador
+            ? agr
+            : {
+                ...agr,
+                detalles: agr.detalles.map((d) =>
+                  d.id_detalle === modalObs.det.id_detalle
+                    ? { ...d, observacion: data.observacion }
+                    : d
+                ),
+              }
+        ),
+      }));
+      setModalObs(null);
+    } catch (err) {
+      alert(err.message);
+      setModalObs((prev) => (prev ? { ...prev, guardando: false } : null));
+    }
+  };
+
   const handleAgregarCupsSubmit = async (e) => {
     e.preventDefault();
     if (!modalCupsAgrId) return;
@@ -395,11 +431,18 @@ export default function App() {
         descripcion: nuevoCups.descripcion,
         frecuencia_anual: parseFloat(nuevoCups.frecuencia_anual) || 0,
         costo_medio_evento: parseFloat(nuevoCups.costo_medio_evento) || 0,
+        observacion: nuevoCups.observacion,
       }),
     });
     if (res.ok) {
       setModalCupsAgrId(null);
-      setNuevoCups({ codigo_cups: "", descripcion: "", frecuencia_anual: 0, costo_medio_evento: 0 });
+      setNuevoCups({
+        codigo_cups: "",
+        descripcion: "",
+        frecuencia_anual: 0,
+        costo_medio_evento: 0,
+        observacion: "",
+      });
       setExpandedGroups((prev) => ({ ...prev, [agrId]: true }));
       await cargarDetalleNota(nota.id_nota);
       setExpandedGroups((prev) => ({ ...prev, [agrId]: true }));
@@ -408,59 +451,74 @@ export default function App() {
 
   const calculos = useMemo(() => {
     if (!nota) return null;
-    const poblacionNum = nota.poblacion || 1;
-    let valorTotalMesGlobal = 0;
+    const poblacionNum = Number(nota.poblacion) || 0;
+    let valorTotalMesBase = 0;
 
-    const agrupadoresCalculados = nota.agrupadores.map((agr) => {
-      const detallesBase = agr.detalles.filter((d) => !d.estado_contratacion);
+    const agrupadoresCalc = nota.agrupadores.map((agr) => {
+      let freqAgr = 0;
+      let evAnioAgr = 0;
+      let evMesAgr = 0;
+      let costoTotalAgr = 0;
+      let cxuAgr = 0;
 
       const detallesCalc = agr.detalles.map((det) => {
-        const eventosAnio = (Number(det.frecuencia_anual) || 0) * poblacionNum;
-        const eventoMes = eventosAnio / 12;
-        const costoTotal = eventoMes * (Number(det.costo_medio_evento) || 0);
+        const freq = Number(det.frecuencia_anual) || 0;
+        const cme = Number(det.costo_medio_evento) || 0;
+        const eventosAnio = freq * poblacionNum;
+        const eventosMes = eventosAnio / 12;
+        const costoTotal = eventosMes * cme;
         const cxu = poblacionNum > 0 ? costoTotal / poblacionNum : 0;
-        return { ...det, eventosAnio, eventoMes, costoTotal, cxu };
+
+        freqAgr += freq;
+        evAnioAgr += eventosAnio;
+        evMesAgr += eventosMes;
+        costoTotalAgr += costoTotal;
+        cxuAgr += cxu;
+
+        if (!det.estado_contratacion) {
+          valorTotalMesBase += costoTotal;
+        }
+
+        return {
+          ...det,
+          eventosAnio,
+          eventosMes,
+          eventoMes: eventosMes,
+          costoTotal,
+          cxu,
+        };
       });
 
-      const freqAgr = detallesBase.reduce((acc, d) => acc + (Number(d.frecuencia_anual) || 0), 0);
-      const evAnioAgr = detallesBase.reduce(
-        (acc, d) => acc + (Number(d.frecuencia_anual) || 0) * poblacionNum,
-        0
-      );
-      const evMesAgr = evAnioAgr / 12;
-      const costoTotalAgr = detallesBase.reduce(
-        (acc, d) =>
-          acc +
-          (((Number(d.frecuencia_anual) || 0) * poblacionNum) / 12) * (Number(d.costo_medio_evento) || 0),
-        0
-      );
-      const costoMedioGrupo = evMesAgr > 0 ? costoTotalAgr / evMesAgr : 0;
-      const cxuAgr = poblacionNum > 0 ? costoTotalAgr / poblacionNum : 0;
-
-      valorTotalMesGlobal += costoTotalAgr;
+      const cmeAgr = evMesAgr > 0 ? costoTotalAgr / evMesAgr : 0;
 
       return {
         ...agr,
-        sumFreq: freqAgr,
-        sumEvAnio: evAnioAgr,
-        sumEvMes: evMesAgr,
-        costoMedioGrupo,
-        sumCostoTotal: costoTotalAgr,
-        sumCxu: cxuAgr,
         detalles: detallesCalc,
+        totales: {
+          frecuencia_anual: freqAgr,
+          eventosAnio: evAnioAgr,
+          eventosMes: evMesAgr,
+          costo_medio_evento: cmeAgr,
+          costoTotal: costoTotalAgr,
+          cxu: cxuAgr,
+        },
       };
     });
 
-    const cxuGlobal = poblacionNum > 0 ? valorTotalMesGlobal / poblacionNum : 0;
-    const valorContributivo = valorTotalMesGlobal * (nota.pct_contributivo || 0.78);
-    const valorSubsidiado = valorTotalMesGlobal - valorContributivo;
+    const cxuGlobal = poblacionNum > 0 ? valorTotalMesBase / poblacionNum : 0;
+    const pctC = Number(nota.pct_contributivo) || 0.78;
+    const contributivo = valorTotalMesBase * pctC;
+    const subsidiado = valorTotalMesBase - contributivo;
 
     return {
-      agrupadores: agrupadoresCalculados,
-      valorTotalMesGlobal,
+      agrupadores: agrupadoresCalc,
+      valorTotalMes: valorTotalMesBase,
+      valorTotalMesGlobal: valorTotalMesBase,
       cxuGlobal,
-      valorContributivo,
-      valorSubsidiado,
+      contributivo,
+      subsidiado,
+      valorContributivo: contributivo,
+      valorSubsidiado: subsidiado,
     };
   }, [nota]);
 
@@ -1316,22 +1374,22 @@ export default function App() {
                           <td className="border border-slate-300 px-2 py-1.5" />
                           <td className="border border-slate-300 px-3 py-1.5" />
                           <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">
-                            {formatNum(agr.sumFreq, 4)}
+                            {formatNum(agr.totales.frecuencia_anual, 4)}
                           </td>
                           <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">
-                            {formatNum(agr.sumEvAnio, 0)}
+                            {formatNum(agr.totales.eventosAnio, 0)}
                           </td>
                           <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">
-                            {formatNum(agr.sumEvMes, 2)}
+                            {formatNum(agr.totales.eventosMes, 2)}
                           </td>
                           <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">
-                            {formatCOP(agr.costoMedioGrupo)}
+                            {formatCOP(agr.totales.costo_medio_evento)}
                           </td>
                           <td className="border border-[#F2C6D4] px-2 py-1.5 text-right font-mono text-[#1B2A59]">
-                            {formatCOP(agr.sumCostoTotal)}
+                            {formatCOP(agr.totales.costoTotal)}
                           </td>
                           <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">
-                            {formatCOP(agr.sumCxu)}
+                            {formatCOP(agr.totales.cxu)}
                           </td>
                           <td className="border border-slate-300 px-3 py-1.5">{agr.nombre_agrupador}</td>
                         </tr>
@@ -1400,6 +1458,45 @@ export default function App() {
                                         }
                                       >
                                         {esEstadoCotizaciones(det.estado_contratacion) ? "Cotizaciones" : "OK ✓"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setModalObs({
+                                            idAgrupador: agr.id_agrupador,
+                                            nombreAgrupador: agr.nombre_agrupador,
+                                            det,
+                                            textoObs: det.observacion || "",
+                                            guardando: false,
+                                          })
+                                        }
+                                        title={
+                                          det.observacion
+                                            ? `Observación: ${det.observacion}`
+                                            : "Agregar o editar observación"
+                                        }
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold border transition cursor-pointer ${
+                                          det.observacion && det.observacion.trim()
+                                            ? "bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100"
+                                            : "bg-slate-50 text-slate-600 border-slate-300 hover:bg-slate-100"
+                                        }`}
+                                      >
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          viewBox="0 0 20 20"
+                                          fill="currentColor"
+                                          className="w-3.5 h-3.5"
+                                        >
+                                          <path
+                                            fillRule="evenodd"
+                                            d="M3.43 2.524A41.29 41.29 0 0110 2c2.236 0 4.43.18 6.57.524 1.437.231 2.43 1.49 2.43 2.902v5.148c0 1.413-.993 2.67-2.43 2.902a41.102 41.102 0 01-3.55.414c-.28.02-.521.18-.643.413l-1.712 3.293a.75.75 0 01-1.33 0l-1.713-3.293a.783.783 0 00-.642-.413 41.108 41.108 0 01-3.55-.414C1.993 13.245 1 11.986 1 10.574V5.426c0-1.413.993-2.67 2.43-2.902z"
+                                            clipRule="evenodd"
+                                          />
+                                        </svg>
+                                        <span>Obs.</span>
+                                        {det.observacion && det.observacion.trim() && (
+                                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                        )}
                                       </button>
                                       <button
                                         type="button"
@@ -1487,6 +1584,124 @@ export default function App() {
         </main>
       )}
 
+      {modalObs && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <form
+            onSubmit={handleGuardarObservacion}
+            className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto"
+          >
+            <div className="bg-[#1B2A59] text-white px-6 py-4 flex items-center justify-between border-b-4 border-[#D81B60] rounded-t-xl">
+              <h2 className="text-sm font-bold tracking-tight">Detalle y Observación del CUPS Nuevo</h2>
+              <button
+                type="button"
+                onClick={() => setModalObs(null)}
+                className="text-white/80 hover:text-white text-xl leading-none px-2 cursor-pointer"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="bg-[#FDF7F9] border border-[#F2C6D4] rounded-lg p-4 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-slate-700">
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Agrupador:</span> {modalObs.nombreAgrupador}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Estado:</span>{" "}
+                    {esEstadoCotizaciones(modalObs.det.estado_contratacion) ? (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded border border-purple-300 bg-purple-100 text-purple-800">
+                        Cotizaciones
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-300 bg-emerald-100 text-emerald-800">
+                        OK ✓
+                      </span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Código CUPS:</span> {modalObs.det.codigo_cups}
+                  </div>
+                  <div className="sm:col-span-2">
+                    <span className="font-bold text-[#1B2A59]">Descripción:</span> {modalObs.det.descripcion}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Frecuencia Anual:</span>{" "}
+                    {Number(modalObs.det.frecuencia_anual || 0).toFixed(6)}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Eventos Año:</span>{" "}
+                    {Math.round(
+                      (Number(modalObs.det.frecuencia_anual) || 0) * (Number(nota?.poblacion) || 0)
+                    ).toLocaleString("es-CO")}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Evento Mes:</span>{" "}
+                    {(
+                      ((Number(modalObs.det.frecuencia_anual) || 0) * (Number(nota?.poblacion) || 0)) /
+                      12
+                    ).toFixed(2)}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Costo Medio Evento:</span>{" "}
+                    $ {Math.round(Number(modalObs.det.costo_medio_evento) || 0).toLocaleString("es-CO")}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">Costo Total:</span>{" "}
+                    $ {Math.round(
+                      (((Number(modalObs.det.frecuencia_anual) || 0) * (Number(nota?.poblacion) || 0)) / 12) *
+                        (Number(modalObs.det.costo_medio_evento) || 0)
+                    ).toLocaleString("es-CO")}
+                  </div>
+                  <div>
+                    <span className="font-bold text-[#1B2A59]">CxU:</span>{" "}
+                    $ {Math.round(
+                      ((((Number(modalObs.det.frecuencia_anual) || 0) * (Number(nota?.poblacion) || 0)) / 12) *
+                        (Number(modalObs.det.costo_medio_evento) || 0)) /
+                        (Number(nota?.poblacion) || 1)
+                    ).toLocaleString("es-CO")}
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#1B2A59]">Observación</label>
+                  <span className="text-[11px] text-slate-500">
+                    {modalObs.textoObs.length} / 4000 caracteres
+                  </span>
+                </div>
+                <textarea
+                  rows={5}
+                  maxLength={4000}
+                  value={modalObs.textoObs}
+                  onChange={(e) =>
+                    setModalObs((prev) => (prev ? { ...prev, textoObs: e.target.value } : null))
+                  }
+                  placeholder="Ingresa aquí la observación detallada, justificación clínica o notas de cotización..."
+                  className="w-full px-3.5 py-2.5 text-sm text-slate-800 border border-[#F2C6D4] rounded-lg focus:outline-none focus:border-[#D81B60] focus:ring-2 focus:ring-[#D81B60]/15 resize-y"
+                />
+              </div>
+              <div className="flex justify-end gap-2 mt-5">
+                <button
+                  type="button"
+                  onClick={() => setModalObs(null)}
+                  className="px-4 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={modalObs.guardando}
+                  className="px-4 py-2 text-xs font-semibold bg-[#D81B60] hover:bg-[#B81450] disabled:opacity-60 text-white rounded-md cursor-pointer"
+                >
+                  {modalObs.guardando ? "Guardando..." : "Guardar Observación"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
       {modalCupsAgrId && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
           <form
@@ -1537,6 +1752,17 @@ export default function App() {
                   className="w-full border border-slate-300 rounded px-3 py-1.5 text-sm"
                 />
               </div>
+            </div>
+            <div>
+              <label className="block text-xs font-bold mb-1 text-[#1B2A59]">Observación inicial (opcional)</label>
+              <textarea
+                rows={3}
+                maxLength={4000}
+                value={nuevoCups.observacion}
+                onChange={(e) => setNuevoCups({ ...nuevoCups, observacion: e.target.value })}
+                placeholder="Observación inicial (opcional)..."
+                className="w-full border border-[#F2C6D4] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D81B60] focus:ring-2 focus:ring-[#D81B60]/15 resize-y"
+              />
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button

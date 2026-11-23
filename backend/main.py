@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from database import get_connection, oracle_config_status
+from database import get_connection, oracle_config_status, asegurar_columna_observacion
 from auth import router as auth_router, get_current_user
 from excel_service import parsear_excel_nota_tecnica, generar_excel_nota_tecnica
 
@@ -24,6 +24,14 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
+
+
+@app.on_event("startup")
+def on_startup():
+    try:
+        asegurar_columna_observacion()
+    except Exception as e:
+        print("Advertencia al verificar columna OBSERVACION:", e)
 
 
 @app.exception_handler(Exception)
@@ -65,10 +73,15 @@ class NuevoCupsPayload(BaseModel):
     descripcion: str
     frecuencia_anual: float = 0.0
     costo_medio_evento: float = 0.0
+    observacion: Optional[str] = ""
 
 
 class EstadoContratacionPayload(BaseModel):
     estado_contratacion: str
+
+
+class ObservacionPayload(BaseModel):
+    observacion: str = ""
 
 
 def parsear_clausulas_y_estados(clausulas_raw) -> tuple[list, dict]:
@@ -310,7 +323,7 @@ def obtener_nota_completa(id_nota: int):
             cur.execute(
                 """
                 SELECT ID_DETALLE, ORDEN, CODIGO_CUPS, DESCRIPCION,
-                       FRECUENCIA_ANUAL, COSTO_MEDIO_EVENTO
+                       FRECUENCIA_ANUAL, COSTO_MEDIO_EVENTO, OBSERVACION
                 FROM NT_DETALLE_CUPS
                 WHERE ID_AGRUPADOR = :id_agrupador
                 ORDER BY ORDEN ASC
@@ -329,6 +342,7 @@ def obtener_nota_completa(id_nota: int):
                     "descripcion": d[3],
                     "frecuencia_anual": float(d[4]),
                     "costo_medio_evento": float(d[5]),
+                    "observacion": str(d[6] or ""),
                     "estado_contratacion": estado_norm,
                 })
             nota["agrupadores"].append({
@@ -469,12 +483,15 @@ def agregar_cups(id_agrupador: int, payload: NuevoCupsPayload, user=Depends(get_
         next_orden = int(cur.fetchone()[0])
 
         id_det_var = cur.var(int)
+        obs_limpia = (payload.observacion or "").strip()[:4000] or None
         cur.execute(
             """
             INSERT INTO NT_DETALLE_CUPS (
-                ID_AGRUPADOR, ORDEN, CODIGO_CUPS, DESCRIPCION, FRECUENCIA_ANUAL, COSTO_MEDIO_EVENTO
+                ID_AGRUPADOR, ORDEN, CODIGO_CUPS, DESCRIPCION,
+                FRECUENCIA_ANUAL, COSTO_MEDIO_EVENTO, OBSERVACION
             ) VALUES (
-                :id_agrupador, :orden, :codigo_cups, :descripcion, :frecuencia_anual, :costo_medio_evento
+                :id_agrupador, :orden, :codigo_cups, :descripcion,
+                :frecuencia_anual, :costo_medio_evento, :observacion
             ) RETURNING ID_DETALLE INTO :id_detalle
             """,
             {
@@ -484,6 +501,7 @@ def agregar_cups(id_agrupador: int, payload: NuevoCupsPayload, user=Depends(get_
                 "descripcion": payload.descripcion.strip().upper()[:500],
                 "frecuencia_anual": round(float(payload.frecuencia_anual), 12),
                 "costo_medio_evento": round(float(payload.costo_medio_evento), 4),
+                "observacion": obs_limpia,
                 "id_detalle": id_det_var,
             },
         )
@@ -496,7 +514,59 @@ def agregar_cups(id_agrupador: int, payload: NuevoCupsPayload, user=Depends(get_
         return {
             "id_detalle": nuevo_id_det,
             "estado_contratacion": "COTIZACIONES",
+            "observacion": obs_limpia or "",
         }
+    except Exception as e:
+        conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.patch("/api/detalle-cups/{id_detalle}/observacion")
+def actualizar_observacion_cups(
+    id_detalle: int, payload: ObservacionPayload, user=Depends(get_current_user)
+):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT C.CLAUSULAS_JSON
+            FROM NT_DETALLE_CUPS D
+            JOIN NT_AGRUPADORES A ON A.ID_AGRUPADOR = D.ID_AGRUPADOR
+            JOIN NT_CABECERA C ON C.ID_NOTA = A.ID_NOTA
+            WHERE D.ID_DETALLE = :id_detalle
+            """,
+            {"id_detalle": id_detalle},
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Detalle CUPS no encontrado")
+
+        _, contratacion_estados = parsear_clausulas_y_estados(row[0])
+        if str(id_detalle) not in contratacion_estados:
+            raise HTTPException(
+                status_code=403,
+                detail="Solo se permite agregar observaciones a los CUPS nuevos de Cotizaciones.",
+            )
+
+        obs_limpia = (payload.observacion or "").strip()[:4000]
+        cur.execute(
+            """
+            UPDATE NT_DETALLE_CUPS
+            SET OBSERVACION = :observacion
+            WHERE ID_DETALLE = :id_detalle
+            """,
+            {"observacion": obs_limpia or None, "id_detalle": id_detalle},
+        )
+        conn.commit()
+        return {"id_detalle": id_detalle, "observacion": obs_limpia}
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         traceback.print_exc()
