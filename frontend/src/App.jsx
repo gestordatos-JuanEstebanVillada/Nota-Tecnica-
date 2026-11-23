@@ -60,6 +60,22 @@ const MESES_PGP = [
   "diciembre",
 ];
 
+const MESES_KEYS = [
+  "enero",
+  "febrero",
+  "marzo",
+  "abril",
+  "mayo",
+  "junio",
+  "julio",
+  "agosto",
+  "septiembre",
+  "octubre",
+  "noviembre",
+  "diciembre",
+  "acumulado",
+];
+
 const MESES_PGP_LABELS = [
   "Enero",
   "Febrero",
@@ -277,8 +293,40 @@ export default function App() {
     }));
   };
 
+  const esEstadoCotizaciones = (estado) => estado === "COTIZACIONES" || estado === "CONTRATACION";
+
+  const handleEliminarCupsNuevo = async (idAgrupador, det) => {
+    if (!det.estado_contratacion) return;
+    const confirmar = window.confirm(
+      `¿Deseas eliminar el CUPS nuevo "${det.codigo_cups} - ${det.descripcion}"?`
+    );
+    if (!confirmar) return;
+
+    try {
+      const res = await fetch(`${API_URL}/detalle-cups/${det.id_detalle}`, {
+        method: "DELETE",
+        headers: authHeaders,
+      });
+      const { data, raw } = await parseApiResponse(res);
+      if (!res.ok) throw new Error(mensajeErrorHttp(res, raw, data));
+      setNota((prev) => ({
+        ...prev,
+        agrupadores: prev.agrupadores.map((agr) =>
+          agr.id_agrupador !== idAgrupador
+            ? agr
+            : {
+                ...agr,
+                detalles: agr.detalles.filter((d) => d.id_detalle !== det.id_detalle),
+              }
+        ),
+      }));
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
   const handleToggleEstado = async (idAgrupador, idDetalle, estadoActual) => {
-    const nuevoEstado = estadoActual === "CONTRATACION" ? "OK" : "CONTRATACION";
+    const nuevoEstado = esEstadoCotizaciones(estadoActual) ? "OK" : "COTIZACIONES";
     try {
       const res = await fetch(`${API_URL}/detalle-cups/${idDetalle}/estado`, {
         method: "PATCH",
@@ -360,47 +408,50 @@ export default function App() {
 
   const calculos = useMemo(() => {
     if (!nota) return null;
-    const pob = nota.poblacion || 1;
+    const poblacionNum = nota.poblacion || 1;
     let valorTotalMesGlobal = 0;
 
     const agrupadoresCalculados = nota.agrupadores.map((agr) => {
-      let sumFreq = 0;
-      let sumEvAnio = 0;
-      let sumEvMes = 0;
-      let sumCostoTotal = 0;
-      let sumCxu = 0;
+      const detallesBase = agr.detalles.filter((d) => !d.estado_contratacion);
 
       const detallesCalc = agr.detalles.map((det) => {
-        const eventosAnio = det.frecuencia_anual * pob;
+        const eventosAnio = (Number(det.frecuencia_anual) || 0) * poblacionNum;
         const eventoMes = eventosAnio / 12;
-        const costoTotal = eventoMes * det.costo_medio_evento;
-        const cxu = costoTotal / pob;
-
-        sumFreq += det.frecuencia_anual;
-        sumEvAnio += eventosAnio;
-        sumEvMes += eventoMes;
-        sumCostoTotal += costoTotal;
-        sumCxu += cxu;
-
+        const costoTotal = eventoMes * (Number(det.costo_medio_evento) || 0);
+        const cxu = poblacionNum > 0 ? costoTotal / poblacionNum : 0;
         return { ...det, eventosAnio, eventoMes, costoTotal, cxu };
       });
 
-      const costoMedioGrupo = sumEvMes > 0 ? sumCostoTotal / sumEvMes : 0;
-      valorTotalMesGlobal += sumCostoTotal;
+      const freqAgr = detallesBase.reduce((acc, d) => acc + (Number(d.frecuencia_anual) || 0), 0);
+      const evAnioAgr = detallesBase.reduce(
+        (acc, d) => acc + (Number(d.frecuencia_anual) || 0) * poblacionNum,
+        0
+      );
+      const evMesAgr = evAnioAgr / 12;
+      const costoTotalAgr = detallesBase.reduce(
+        (acc, d) =>
+          acc +
+          (((Number(d.frecuencia_anual) || 0) * poblacionNum) / 12) * (Number(d.costo_medio_evento) || 0),
+        0
+      );
+      const costoMedioGrupo = evMesAgr > 0 ? costoTotalAgr / evMesAgr : 0;
+      const cxuAgr = poblacionNum > 0 ? costoTotalAgr / poblacionNum : 0;
+
+      valorTotalMesGlobal += costoTotalAgr;
 
       return {
         ...agr,
-        sumFreq,
-        sumEvAnio,
-        sumEvMes,
+        sumFreq: freqAgr,
+        sumEvAnio: evAnioAgr,
+        sumEvMes: evMesAgr,
         costoMedioGrupo,
-        sumCostoTotal,
-        sumCxu,
+        sumCostoTotal: costoTotalAgr,
+        sumCxu: cxuAgr,
         detalles: detallesCalc,
       };
     });
 
-    const cxuGlobal = valorTotalMesGlobal / pob;
+    const cxuGlobal = poblacionNum > 0 ? valorTotalMesGlobal / poblacionNum : 0;
     const valorContributivo = valorTotalMesGlobal * (nota.pct_contributivo || 0.78);
     const valorSubsidiado = valorTotalMesGlobal - valorContributivo;
 
@@ -450,6 +501,24 @@ export default function App() {
     const valorTotal = detallePacientesPgp.reduce((s, p) => s + (p.total || 0), 0);
     return { totalPacientesAcum, pacientesUnicos, valorTotal };
   }, [resumenPgp, detallePacientesPgp]);
+
+  const totalesVerticalesPgp = useMemo(() => {
+    const sumaPacientes = {};
+    const sumaTotal = {};
+    MESES_KEYS.forEach((k) => {
+      sumaPacientes[k] = 0;
+      sumaTotal[k] = 0;
+    });
+
+    resumenPgp.forEach((row) => {
+      const destino = row.metrica === "Pacientes" ? sumaPacientes : sumaTotal;
+      MESES_KEYS.forEach((k) => {
+        destino[k] += Number(row[k]) || 0;
+      });
+    });
+
+    return { pacientes: sumaPacientes, total: sumaTotal };
+  }, [resumenPgp]);
 
   const detallePacientesFiltrados = useMemo(() => {
     const q = busquedaPaciente.trim().toLowerCase();
@@ -647,6 +716,53 @@ export default function App() {
                     </tr>
                   )}
                 </tbody>
+                {resumenPgp.length > 0 && (
+                  <tfoot className="border-t-2 border-[#1B2A59] sticky bottom-0 z-10">
+                    <tr className="bg-[#EEF2FF] text-[#1B2A59] font-bold border-b border-[#CBD5E1]">
+                      <td colSpan={4} className="border border-[#F2C6D4] px-3 py-2.5 text-left text-xs uppercase tracking-wide">
+                        Total Consolidado · Todas las Empresas
+                      </td>
+                      <td className="border border-[#F2C6D4] px-3 py-2.5 text-center">
+                        <span className="inline-block px-2 py-0.5 rounded text-[11px] font-bold bg-[#1B2A59] text-white">
+                          Pacientes
+                        </span>
+                      </td>
+                      {MESES_KEYS.map((mesKey) => (
+                        <td
+                          key={`tot-pac-${mesKey}`}
+                          className={`border border-[#F2C6D4] px-3 py-2.5 text-right font-mono whitespace-nowrap ${
+                            mesKey === "acumulado" ? "bg-[#E0E7FF] font-extrabold" : ""
+                          }`}
+                        >
+                          {Math.round(totalesVerticalesPgp.pacientes[mesKey] || 0).toLocaleString("es-CO")}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="bg-[#FCE7EF] text-[#1B2A59] font-bold">
+                      <td
+                        colSpan={4}
+                        className="border border-[#F2C6D4] px-3 py-2.5 text-left text-xs uppercase tracking-wide text-[#D81B60]"
+                      >
+                        Total Consolidado · Valor ($)
+                      </td>
+                      <td className="border border-[#F2C6D4] px-3 py-2.5 text-center">
+                        <span className="inline-block px-2 py-0.5 rounded text-[11px] font-bold bg-[#D81B60] text-white">
+                          Total
+                        </span>
+                      </td>
+                      {MESES_KEYS.map((mesKey) => (
+                        <td
+                          key={`tot-val-${mesKey}`}
+                          className={`border border-[#F2C6D4] px-3 py-2.5 text-right font-mono whitespace-nowrap ${
+                            mesKey === "acumulado" ? "bg-[#F8D0E0] text-[#B81450] font-extrabold" : ""
+                          }`}
+                        >
+                          $ {Math.round(totalesVerticalesPgp.total[mesKey] || 0).toLocaleString("es-CO")}
+                        </td>
+                      ))}
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           </section>
@@ -1083,9 +1199,9 @@ export default function App() {
                 className="text-xs px-2.5 py-1.5 border border-slate-300 rounded-md bg-white text-slate-700 font-medium outline-none focus:ring-2 focus:ring-purple-500"
               >
                 <option value="TODOS">Todos los registros</option>
-                <option value="CONTRATACION">Estado: Contratación</option>
-                <option value="OK">Estado: OK</option>
-                <option value="NUEVOS">Todos los nuevos (Contratación + OK)</option>
+                <option value="COTIZACIONES">Estado: Cotizaciones (Nuevos)</option>
+                <option value="OK">Estado: OK (Aprobados)</option>
+                <option value="NUEVOS">Todos los nuevos (Cotizaciones + OK)</option>
               </select>
             </div>
           </section>
@@ -1132,7 +1248,13 @@ export default function App() {
                     const query = filtroTexto.trim().toLowerCase();
                     const detallesFiltrados = agr.detalles.filter((d) => {
                       if (soloConFrecuencia && d.frecuencia_anual <= 0) return false;
-                      if (filtroEstado === "CONTRATACION" && d.estado_contratacion !== "CONTRATACION") {
+                      if (
+                        filtroEstado === "COTIZACIONES" &&
+                        !(
+                          d.estado_contratacion === "COTIZACIONES" ||
+                          d.estado_contratacion === "CONTRATACION"
+                        )
+                      ) {
                         return false;
                       }
                       if (filtroEstado === "OK" && d.estado_contratacion !== "OK") return false;
@@ -1261,23 +1383,44 @@ export default function App() {
                                       }
                                       className="flex-1 min-w-0 text-xs px-1.5 py-0.5 border border-purple-200 rounded bg-purple-50/30 focus:border-purple-500 outline-none uppercase"
                                     />
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        handleToggleEstado(
-                                          agr.id_agrupador,
-                                          det.id_detalle,
-                                          det.estado_contratacion
-                                        )
-                                      }
-                                      className={
-                                        det.estado_contratacion === "CONTRATACION"
-                                          ? "shrink-0 text-[10px] font-bold px-2 py-0.5 rounded border border-purple-300 bg-purple-100 text-purple-800 hover:bg-purple-200 cursor-pointer whitespace-nowrap"
-                                          : "shrink-0 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-300 bg-emerald-100 text-emerald-800 hover:bg-emerald-200 cursor-pointer whitespace-nowrap"
-                                      }
-                                    >
-                                      {det.estado_contratacion === "CONTRATACION" ? "Contratación" : "OK ✓"}
-                                    </button>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleToggleEstado(
+                                            agr.id_agrupador,
+                                            det.id_detalle,
+                                            det.estado_contratacion
+                                          )
+                                        }
+                                        className={
+                                          esEstadoCotizaciones(det.estado_contratacion)
+                                            ? "text-[10px] font-bold px-2 py-0.5 rounded border border-purple-300 bg-purple-100 text-purple-800 hover:bg-purple-200 cursor-pointer whitespace-nowrap"
+                                            : "text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-300 bg-emerald-100 text-emerald-800 hover:bg-emerald-200 cursor-pointer whitespace-nowrap"
+                                        }
+                                      >
+                                        {esEstadoCotizaciones(det.estado_contratacion) ? "Cotizaciones" : "OK ✓"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleEliminarCupsNuevo(agr.id_agrupador, det)}
+                                        title="Eliminar este CUPS nuevo"
+                                        className="p-1 text-rose-500 hover:text-rose-700 hover:bg-rose-50 rounded border border-transparent hover:border-rose-200 transition cursor-pointer"
+                                      >
+                                        <svg
+                                          xmlns="http://www.w3.org/2000/svg"
+                                          viewBox="0 0 20 20"
+                                          fill="currentColor"
+                                          className="w-4 h-4"
+                                        >
+                                          <path
+                                            fillRule="evenodd"
+                                            d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z"
+                                            clipRule="evenodd"
+                                          />
+                                        </svg>
+                                      </button>
+                                    </div>
                                   </div>
                                 ) : (
                                   det.descripcion

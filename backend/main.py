@@ -320,6 +320,8 @@ def obtener_nota_completa(id_nota: int):
             detalles = []
             for d in cur.fetchall():
                 id_det = int(d[0])
+                estado_raw = contratacion_estados.get(str(id_det))
+                estado_norm = "COTIZACIONES" if estado_raw == "CONTRATACION" else estado_raw
                 detalles.append({
                     "id_detalle": id_det,
                     "orden": int(d[1]),
@@ -327,7 +329,7 @@ def obtener_nota_completa(id_nota: int):
                     "descripcion": d[3],
                     "frecuencia_anual": float(d[4]),
                     "costo_medio_evento": float(d[5]),
-                    "estado_contratacion": contratacion_estados.get(str(id_det)),
+                    "estado_contratacion": estado_norm,
                 })
             nota["agrupadores"].append({
                 "id_agrupador": id_agr,
@@ -487,13 +489,13 @@ def agregar_cups(id_agrupador: int, payload: NuevoCupsPayload, user=Depends(get_
         )
         nuevo_id_det = int(id_det_var.getvalue()[0])
 
-        contratacion_estados[str(nuevo_id_det)] = "CONTRATACION"
+        contratacion_estados[str(nuevo_id_det)] = "COTIZACIONES"
         guardar_clausulas_y_estados(conn, cur, id_nota, clausulas_list, contratacion_estados)
 
         conn.commit()
         return {
             "id_detalle": nuevo_id_det,
-            "estado_contratacion": "CONTRATACION",
+            "estado_contratacion": "COTIZACIONES",
         }
     except Exception as e:
         conn.rollback()
@@ -509,8 +511,10 @@ def cambiar_estado_contratacion(
     id_detalle: int, payload: EstadoContratacionPayload, user=Depends(get_current_user)
 ):
     nuevo_estado = payload.estado_contratacion.strip().upper()
-    if nuevo_estado not in ("CONTRATACION", "OK"):
-        raise HTTPException(status_code=400, detail="Estado permitido: CONTRATACION o OK")
+    if nuevo_estado == "CONTRATACION":
+        nuevo_estado = "COTIZACIONES"
+    if nuevo_estado not in ("COTIZACIONES", "OK"):
+        raise HTTPException(status_code=400, detail="Estado permitido: COTIZACIONES o OK")
 
     conn = get_connection()
     cur = conn.cursor()
@@ -535,13 +539,61 @@ def cambiar_estado_contratacion(
         if str(id_detalle) not in contratacion_estados:
             raise HTTPException(
                 status_code=400,
-                detail="Este CUPS pertenece al Excel base y no es un ingreso nuevo de Contratación.",
+                detail="Este CUPS pertenece al Excel base y no es un ingreso nuevo de Cotizaciones.",
             )
 
         contratacion_estados[str(id_detalle)] = nuevo_estado
         guardar_clausulas_y_estados(conn, cur, id_nota, clausulas_list, contratacion_estados)
         conn.commit()
         return {"id_detalle": id_detalle, "estado_contratacion": nuevo_estado}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as e:
+        conn.rollback()
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.delete("/api/detalle-cups/{id_detalle}")
+def eliminar_cups_nuevo(id_detalle: int, user=Depends(get_current_user)):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT C.ID_NOTA, C.CLAUSULAS_JSON
+            FROM NT_DETALLE_CUPS D
+            JOIN NT_AGRUPADORES A ON A.ID_AGRUPADOR = D.ID_AGRUPADOR
+            JOIN NT_CABECERA C ON C.ID_NOTA = A.ID_NOTA
+            WHERE D.ID_DETALLE = :id_detalle
+            """,
+            {"id_detalle": id_detalle},
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Detalle CUPS no encontrado")
+
+        id_nota = int(row[0])
+        clausulas_list, contratacion_estados = parsear_clausulas_y_estados(row[1])
+
+        if str(id_detalle) not in contratacion_estados:
+            raise HTTPException(
+                status_code=403,
+                detail="No se pueden eliminar procedimientos cargados desde el Excel base.",
+            )
+
+        cur.execute(
+            "DELETE FROM NT_DETALLE_CUPS WHERE ID_DETALLE = :id_detalle",
+            {"id_detalle": id_detalle},
+        )
+        contratacion_estados.pop(str(id_detalle), None)
+        guardar_clausulas_y_estados(conn, cur, id_nota, clausulas_list, contratacion_estados)
+        conn.commit()
+        return {"mensaje": "CUPS eliminado correctamente", "id_detalle": id_detalle}
     except HTTPException:
         conn.rollback()
         raise

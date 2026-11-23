@@ -1,0 +1,138 @@
+================================================================================
+  NOTA TÉCNICA PGP — Cómo iniciar los servidores
+================================================================================
+
+Raíz del proyecto: carpeta "nota-tecnica-pgp"
+
+Puertos en producción (Docker):
+  - Aplicación web: 3924
+  - API FastAPI (directa): 4296
+
+Puertos en desarrollo local:
+  - Frontend Vite: 5173 (por defecto)
+  - Backend Uvicorn: 8000
+
+================================================================================
+  OPCIÓN 1 — DESARROLLO LOCAL (sin Docker)
+================================================================================
+
+Requisitos:
+  - Python 3.11+
+  - Node.js 20+
+  - Acceso de red a Oracle (SCSE_DB_*)
+
+--- 1) Variables de entorno (backend) ---
+
+  Copiar o crear backend\.env con:
+    SCSE_DB_USER=BDLIGA
+    SCSE_DB_PASSWD=scse
+    SCSE_DB_IP=160.1.1.99
+    SCSE_DB_PORT=1521
+    SCSE_DB_DATABASE=scse
+    JWT_SECRET=liga_cancer_nota_tecnica_2026_secret
+
+--- 2) Iniciar BACKEND (terminal 1) ---
+
+  Windows (PowerShell):
+    cd backend
+    python -m venv venv
+    .\venv\Scripts\Activate.ps1
+    pip install -r requirements.txt
+    uvicorn main:app --reload --host 127.0.0.1 --port 8000
+
+  Linux / macOS:
+    cd backend
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+  Comprobar: http://127.0.0.1:8000/api/health
+
+--- 3) Iniciar FRONTEND (terminal 2) ---
+
+  cd frontend
+  npm ci
+
+  Opcional: crear frontend\.env con:
+    VITE_API_URL=http://localhost:8000/api
+
+  npm run dev
+
+  Abrir en el navegador la URL que muestra Vite (normalmente http://localhost:5173)
+
+================================================================================
+  OPCIÓN 2 — PRODUCCIÓN / SERVIDOR UBUNTU (Docker)
+================================================================================
+
+Requisitos:
+  - Docker Engine + plugin docker compose
+  - Archivo .env en la RAÍZ del proyecto (junto a docker-compose.yml)
+
+--- 1) Configurar entorno ---
+
+  Linux:
+    cd nota-tecnica-pgp
+    cp .env.example .env
+    nano .env
+    (Revisar SCSE_DB_* y JWT_SECRET)
+
+--- 2) Construir y levantar contenedores ---
+
+    docker compose build
+    docker compose up -d
+
+--- 3) Ver estado y logs ---
+
+    docker compose ps
+    docker compose logs -f backend
+    docker compose logs -f frontend
+
+--- 4) Acceso ---
+
+  Aplicación (recomendado):
+    http://IP_DEL_SERVIDOR:3924
+
+  API directa (pruebas):
+    http://IP_DEL_SERVIDOR:4296/api/health
+
+  Prueba vía Nginx (mismo origen que la web):
+    http://IP_DEL_SERVIDOR:3924/api/health
+
+--- 5) Detener / reiniciar ---
+
+    docker compose down
+    docker compose up -d
+    docker compose restart
+
+  Tras cambios de código:
+    docker compose build --no-cache
+    docker compose up -d
+
+================================================================================
+  COMANDOS ÚTILES
+================================================================================
+
+  Health check backend:
+    curl http://127.0.0.1:4296/api/health
+
+  Health check detrás del frontend:
+    curl http://127.0.0.1:3924/api/health
+
+  Ver documentación API (solo si backend expuesto):
+    http://127.0.0.1:4296/docs
+
+================================================================================
+  NOTAS
+================================================================================
+
+  - En Docker, las variables Oracle deben estar en .env de la RAÍZ, no solo en
+    backend\.env (ese archivo no se monta automáticamente en el contenedor).
+
+  - El frontend en Docker llama a /api; Nginx en el puerto 3924 reenvía al
+    backend interno (servicio "backend", puerto 4296).
+
+  - Si el login falla, revise logs del backend y que SCSE_DB_PASSWD no esté
+    vacío en el .env de la raíz.
+
+================================================================================
