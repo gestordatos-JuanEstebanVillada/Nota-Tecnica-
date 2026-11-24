@@ -206,10 +206,11 @@ export default function App() {
   const [subVistaPgp, setSubVistaPgp] = useState("MENSUAL");
   const [resumenPgp, setResumenPgp] = useState([]);
   const [detallePacientesPgp, setDetallePacientesPgp] = useState([]);
-  const [cargandoResumenPgp, setCargandoResumenPgp] = useState(false);
+  const [cargandoPgp, setCargandoPgp] = useState(false);
   const [cargandoDetallePgp, setCargandoDetallePgp] = useState(false);
   const [pacientesUnicosRango, setPacientesUnicosRango] = useState(null);
-  const loadingPgp = cargandoResumenPgp || cargandoDetallePgp;
+  const pgpRequestIdRef = useRef(0);
+  const pgpAbortControllerRef = useRef(null);
   const [busquedaPaciente, setBusquedaPaciente] = useState("");
   const [paginaPacientes, setPaginaPacientes] = useState(1);
   const [pgpConfigurado, setPgpConfigurado] = useState(true);
@@ -233,6 +234,15 @@ export default function App() {
 
   const authHeaders = { Authorization: `Bearer ${token}` };
 
+  const abortPgpRequests = () => {
+    if (pgpAbortControllerRef.current) {
+      pgpAbortControllerRef.current.abort();
+    }
+    pgpRequestIdRef.current += 1;
+    setCargandoPgp(false);
+    setCargandoDetallePgp(false);
+  };
+
   useEffect(() => {
     let link = document.querySelector("link[rel~='icon']");
     if (!link) {
@@ -253,6 +263,7 @@ export default function App() {
   };
 
   const resetContextoPgp = () => {
+    abortPgpRequests();
     setVistaActiva("NOTA_TECNICA");
     setResumenPgp([]);
     setDetallePacientesPgp([]);
@@ -340,8 +351,20 @@ export default function App() {
     agr = pgpAgrupador,
     dx1Val = pgpDx1Input
   ) => {
-    if (!idNota) return;
-    setCargandoResumenPgp(true);
+    if (!idNota) {
+      setCargandoPgp(false);
+      setCargandoDetallePgp(false);
+      return;
+    }
+
+    if (pgpAbortControllerRef.current) {
+      pgpAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    pgpAbortControllerRef.current = controller;
+
+    const currentRequestId = ++pgpRequestIdRef.current;
+    setCargandoPgp(true);
     setCargandoDetallePgp(true);
 
     const params = new URLSearchParams({
@@ -354,15 +377,16 @@ export default function App() {
 
     const reqResumen = fetch(
       `${API_URL}/notas-tecnicas/${idNota}/pgp-resumen-mensual?${params.toString()}`,
-      { headers: authHeaders }
+      { headers: authHeaders, signal: controller.signal }
     )
       .then(async (res) => {
         if (res.status === 401) {
           handleLogout();
           throw new Error("Sesión expirada");
         }
+        if (!res.ok) throw new Error("Error cargando resumen mensual PGP");
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Error cargando resumen mensual PGP");
+        if (currentRequestId !== pgpRequestIdRef.current) return;
         setPgpConfigurado(data.configurado !== false);
         setResumenPgp(data.data || []);
         if (Array.isArray(data.agrupadores)) {
@@ -381,34 +405,45 @@ export default function App() {
         });
       })
       .catch((err) => {
-        console.error(err);
-        alert(err.message);
+        if (err.name !== "AbortError") {
+          console.error("Error resumen PGP:", err);
+        }
       })
-      .finally(() => setCargandoResumenPgp(false));
+      .finally(() => {
+        if (currentRequestId === pgpRequestIdRef.current) {
+          setCargandoPgp(false);
+        }
+      });
 
     const reqDetalle = fetch(
       `${API_URL}/notas-tecnicas/${idNota}/pgp-detalle-pacientes?${params.toString()}`,
-      { headers: authHeaders }
+      { headers: authHeaders, signal: controller.signal }
     )
       .then(async (res) => {
         if (res.status === 401) {
           handleLogout();
           throw new Error("Sesión expirada");
         }
+        if (!res.ok) throw new Error("Error cargando detalle de pacientes PGP");
         const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || "Error cargando detalle de pacientes PGP");
+        if (currentRequestId !== pgpRequestIdRef.current) return;
         setDetallePacientesPgp(data.data || []);
         if (data.configurado === false) {
           setPgpConfigurado(false);
         }
       })
       .catch((err) => {
-        console.error(err);
-        alert(err.message);
+        if (err.name !== "AbortError") {
+          console.error("Error detalle PGP:", err);
+        }
       })
-      .finally(() => setCargandoDetallePgp(false));
+      .finally(() => {
+        if (currentRequestId === pgpRequestIdRef.current) {
+          setCargandoDetallePgp(false);
+        }
+      });
 
-    await Promise.all([reqResumen, reqDetalle]);
+    await Promise.allSettled([reqResumen, reqDetalle]);
   };
 
   useEffect(() => {
@@ -422,8 +457,11 @@ export default function App() {
         pgpDx1Input
       );
     }
+    return () => {
+      abortPgpRequests();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, vistaActiva, nota?.id_nota]);
+  }, [vistaActiva, nota?.id_nota]);
 
   useEffect(() => {
     setPaginaPacientes(1);
@@ -880,26 +918,22 @@ export default function App() {
     );
   };
 
+  const tieneAgrupadorSeleccionado = pgpAgrupador !== "ALL";
+  const tieneDx1Escrito = pgpDx1Input.trim().length > 0;
+  const hayFiltrosActivos =
+    pgpCodEmpresa !== "ALL" || tieneAgrupadorSeleccionado || tieneDx1Escrito;
+
   const handleLimpiarFiltrosPgp = () => {
     setPgpCodEmpresa("ALL");
     setPgpAgrupador("ALL");
     setPgpDx1Input("");
+    setBusquedaAgrupador("");
     setDropdownEmpresaOpen(false);
     setDropdownAgrupadorOpen(false);
     setPaginaPacientes(1);
     if (nota?.id_nota) {
       cargarDatosPgp(nota.id_nota, pgpFechaInicio, pgpFechaFin, "ALL", "ALL", "");
     }
-  };
-
-  const filtrosPgpActivos =
-    pgpCodEmpresa !== "ALL" || pgpAgrupador !== "ALL" || Boolean(pgpDx1Input.trim());
-
-  const handleAnioActualPgp = () => {
-    const ini = `${anioActual}-01-01`;
-    const fin = `${anioActual}-12-31`;
-    setPgpFechaInicio(ini);
-    setPgpFechaFin(fin);
   };
 
   const renderVistaPacientesPgp = () => {
@@ -920,50 +954,42 @@ export default function App() {
     return (
       <div className="space-y-4">
         <section className="bg-white border border-[#F2C6D4] rounded-xl p-4 shadow-sm space-y-4">
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-wrap items-end gap-3 pb-3 border-b border-slate-100">
             <div>
-              <label className="block text-xs font-semibold text-[#1B2A59] mb-1">Fecha inicio</label>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha inicio</label>
               <input
                 type="date"
                 value={pgpFechaInicio}
                 onChange={(e) => setPgpFechaInicio(e.target.value)}
-                className="text-sm px-3 py-2 border border-[#F2C6D4] rounded-md focus:border-[#D81B60] focus:ring-2 focus:ring-[#D81B60]/15 outline-none"
+                className="px-3 py-2 text-sm bg-white border border-[#F2C6D4] rounded-lg text-slate-800 focus:outline-none focus:border-[#D81B60]"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-[#1B2A59] mb-1">Fecha fin</label>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Fecha fin</label>
               <input
                 type="date"
                 value={pgpFechaFin}
                 onChange={(e) => setPgpFechaFin(e.target.value)}
-                className="text-sm px-3 py-2 border border-[#F2C6D4] rounded-md focus:border-[#D81B60] focus:ring-2 focus:ring-[#D81B60]/15 outline-none"
+                className="px-3 py-2 text-sm bg-white border border-[#F2C6D4] rounded-lg text-slate-800 focus:outline-none focus:border-[#D81B60]"
               />
             </div>
             <button
               type="button"
-              onClick={aplicarFiltrosPgp}
-              disabled={loadingPgp}
-              className={`bg-[#D81B60] hover:bg-[#B81450] disabled:opacity-60 text-white font-semibold text-xs px-4 py-2.5 rounded-md cursor-pointer ${
-                filtrosPgpPendientes ? "ring-2 ring-amber-300 ring-offset-1" : ""
-              }`}
-            >
-              {loadingPgp ? "Consultando..." : "Filtrar por Fecha"}
-            </button>
-            {filtrosPgpPendientes && (
-              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md">
-                Filtros pendientes — pulsa Filtrar
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={handleAnioActualPgp}
-              disabled={loadingPgp}
-              className="text-xs font-semibold px-4 py-2.5 rounded-md border border-[#F2C6D4] text-[#1B2A59] bg-[#FDF7F9] hover:bg-[#FCE7EF] cursor-pointer"
+              onClick={() => {
+                const anio = new Date().getFullYear();
+                const ini = `${anio}-01-01`;
+                const fin = `${anio}-12-31`;
+                setPgpFechaInicio(ini);
+                setPgpFechaFin(fin);
+                setPaginaPacientes(1);
+                cargarDatosPgp(nota.id_nota, ini, fin, pgpCodEmpresa, pgpAgrupador, pgpDx1Input);
+              }}
+              className="px-3.5 py-2 text-sm font-semibold text-[#1B2A59] bg-white hover:bg-[#FDF7F9] border border-[#F2C6D4] rounded-lg transition cursor-pointer"
             >
               Año Actual (Ene - Dic)
             </button>
           </div>
-          <div className="flex flex-wrap items-end gap-3 pt-1 border-t border-[#F2C6D4]/60">
+          <div className="flex flex-wrap items-end gap-3 pt-1">
             <div ref={dropdownEmpresaRef} className="relative">
               <label className="block text-xs font-semibold text-slate-600 mb-1">Empresa / Régimen</label>
               <button
@@ -1030,19 +1056,32 @@ export default function App() {
               <label className="block text-xs font-semibold text-slate-600 mb-1">Agrupador</label>
               <button
                 type="button"
+                disabled={tieneDx1Escrito}
+                title={
+                  tieneDx1Escrito
+                    ? "Deshabilitado mientras haya un Código CIE-10 escrito. Limpia los filtros para habilitar."
+                    : "Seleccionar agrupador diagnóstico"
+                }
                 onClick={() => {
+                  if (tieneDx1Escrito) return;
                   setDropdownAgrupadorOpen((prev) => !prev);
                   setDropdownEmpresaOpen(false);
                   setBusquedaAgrupador("");
                 }}
-                className={`w-72 px-3 py-2 text-sm bg-white border rounded-lg text-left flex items-center justify-between gap-2 transition cursor-pointer ${
-                  dropdownAgrupadorOpen
-                    ? "border-[#D81B60] ring-2 ring-[#D81B60]/15"
-                    : "border-slate-300 hover:border-slate-400"
+                className={`w-72 px-3 py-2 text-sm border rounded-lg text-left flex items-center justify-between gap-2 transition ${
+                  tieneDx1Escrito
+                    ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed select-none"
+                    : dropdownAgrupadorOpen
+                    ? "bg-white border-[#D81B60] ring-2 ring-[#D81B60]/15 cursor-pointer"
+                    : "bg-white border-slate-300 hover:border-slate-400 cursor-pointer"
                 }`}
               >
-                <span className="truncate font-medium text-slate-800">
-                  {pgpAgrupador === "ALL"
+                <span
+                  className={`truncate font-medium ${tieneDx1Escrito ? "text-slate-400" : "text-slate-800"}`}
+                >
+                  {tieneDx1Escrito
+                    ? "Deshabilitado (CIE-10 activo)"
+                    : pgpAgrupador === "ALL"
                     ? `Todos los Agrupadores (${opcionesAgrupador.length})`
                     : pgpAgrupador}
                 </span>
@@ -1050,8 +1089,12 @@ export default function App() {
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 20 20"
                   fill="currentColor"
-                  className={`w-4 h-4 shrink-0 text-slate-500 transition-transform ${
-                    dropdownAgrupadorOpen ? "rotate-180 text-[#D81B60]" : ""
+                  className={`w-4 h-4 shrink-0 transition-transform ${
+                    tieneDx1Escrito
+                      ? "text-slate-300"
+                      : dropdownAgrupadorOpen
+                      ? "rotate-180 text-[#D81B60]"
+                      : "text-slate-500"
                   }`}
                 >
                   <path
@@ -1062,7 +1105,7 @@ export default function App() {
                 </svg>
               </button>
 
-              {dropdownAgrupadorOpen && (
+              {dropdownAgrupadorOpen && !tieneDx1Escrito && (
                 <div className="absolute left-0 mt-1.5 w-80 sm:w-96 bg-white border border-[#F2C6D4] rounded-xl shadow-xl z-40 overflow-hidden">
                   <div className="p-2.5 bg-[#FDF7F9] border-b border-[#F2C6D4]">
                     <div className="relative">
@@ -1129,6 +1172,7 @@ export default function App() {
                             type="button"
                             onClick={() => {
                               setPgpAgrupador(agr);
+                              setPgpDx1Input("");
                               setDropdownAgrupadorOpen(false);
                               setBusquedaAgrupador("");
                             }}
@@ -1154,22 +1198,43 @@ export default function App() {
                 <div className="relative">
                   <input
                     type="text"
+                    disabled={tieneAgrupadorSeleccionado}
                     value={pgpDx1Input}
-                    onChange={(e) => setPgpDx1Input(e.target.value)}
+                    title={
+                      tieneAgrupadorSeleccionado
+                        ? "Deshabilitado mientras haya un Agrupador seleccionado. Limpia los filtros para habilitar."
+                        : "Buscar por código CIE-10 (ej: C509)"
+                    }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setPgpDx1Input(val);
+                      if (val.trim().length > 0) {
+                        setPgpAgrupador("ALL");
+                        setDropdownAgrupadorOpen(false);
+                      }
+                    }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") {
+                      if (e.key === "Enter" && !tieneAgrupadorSeleccionado) {
                         e.preventDefault();
                         aplicarFiltrosPgp();
                       }
                     }}
-                    placeholder="Ej: C509 o MAMA..."
-                    className="px-3 py-2 pr-7 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 w-44 uppercase placeholder:normal-case focus:outline-none focus:border-[#D81B60]"
+                    placeholder={
+                      tieneAgrupadorSeleccionado
+                        ? "Deshabilitado (Agrupador activo)"
+                        : "Ej: C509 o MAMA..."
+                    }
+                    className={`px-3 py-2 pr-7 text-sm border rounded-lg w-52 transition ${
+                      tieneAgrupadorSeleccionado
+                        ? "bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed select-none placeholder:text-slate-400"
+                        : "bg-white border-slate-300 text-slate-800 uppercase placeholder:normal-case focus:outline-none focus:border-[#D81B60]"
+                    }`}
                   />
-                  {pgpDx1Input && (
+                  {pgpDx1Input && !tieneAgrupadorSeleccionado && (
                     <button
                       type="button"
                       onClick={() => setPgpDx1Input("")}
-                      title="Borrar texto CIE-10"
+                      title="Borrar código CIE-10"
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#D81B60] text-xs font-bold cursor-pointer"
                     >
                       ✕
@@ -1179,22 +1244,46 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={aplicarFiltrosPgp}
-                  disabled={loadingPgp}
-                  className={`px-4 py-2 text-sm font-semibold text-white bg-[#D81B60] hover:bg-[#B81450] disabled:opacity-60 rounded-lg shadow-xs transition cursor-pointer whitespace-nowrap ${
+                  disabled={cargandoPgp}
+                  onClick={() => {
+                    setDropdownEmpresaOpen(false);
+                    setDropdownAgrupadorOpen(false);
+                    setPaginaPacientes(1);
+                    cargarDatosPgp(
+                      nota.id_nota,
+                      pgpFechaInicio,
+                      pgpFechaFin,
+                      pgpCodEmpresa,
+                      pgpAgrupador,
+                      pgpDx1Input
+                    );
+                  }}
+                  className={`px-5 py-2 text-sm font-semibold text-white rounded-lg shadow-xs transition whitespace-nowrap inline-flex items-center gap-2 ${
                     filtrosPgpPendientes ? "ring-2 ring-amber-300 ring-offset-1" : ""
+                  } ${
+                    cargandoPgp
+                      ? "bg-[#D81B60]/70 cursor-wait"
+                      : "bg-[#D81B60] hover:bg-[#B81450] cursor-pointer"
                   }`}
                 >
-                  {loadingPgp ? "Consultando..." : "Filtrar"}
+                  {cargandoPgp && (
+                    <span className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                  )}
+                  <span>{cargandoPgp ? "Filtrando..." : "Filtrar"}</span>
                 </button>
               </div>
             </div>
-            {filtrosPgpActivos && (
+            {filtrosPgpPendientes && !cargandoPgp && (
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md self-center">
+                Filtros pendientes — pulsa Filtrar
+              </span>
+            )}
+            {hayFiltrosActivos && (
               <button
                 type="button"
                 onClick={handleLimpiarFiltrosPgp}
-                disabled={loadingPgp}
-                className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 cursor-pointer"
+                disabled={cargandoPgp}
+                className="px-3.5 py-2 text-sm font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg transition cursor-pointer whitespace-nowrap disabled:opacity-60"
               >
                 Limpiar Filtros
               </button>
@@ -1453,7 +1542,7 @@ export default function App() {
                       </tr>
                     );
                   })}
-                  {resumenPgp.length === 0 && !cargandoResumenPgp && (
+                  {resumenPgp.length === 0 && !cargandoPgp && (
                     <tr>
                       <td colSpan={17} className="text-center py-8 text-slate-500">
                         Sin datos para el rango seleccionado.

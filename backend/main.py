@@ -898,11 +898,6 @@ def _construir_filtros_pgp(
         condiciones.append("t.codempresa IN ('10243', '10244')")
 
     mapa = mapa_cie10 or _CIE10_CACHE
-    cond_agr, params_agr, vacio = _condiciones_agrupador_pgp(agrupador, mapa)
-    if vacio:
-        return "1=0", params, True
-    condiciones.extend(cond_agr)
-    params.update(params_agr)
 
     if dx1:
         condiciones.append(
@@ -910,6 +905,12 @@ def _construir_filtros_pgp(
             "OR UPPER(TRIM(t.dx1nom)) LIKE '%' || UPPER(TRIM(:dx1)) || '%')"
         )
         params["dx1"] = dx1
+    elif agrupador and agrupador != "ALL":
+        cond_agr, params_agr, vacio = _condiciones_agrupador_pgp(agrupador, mapa)
+        if vacio:
+            return "1=0", params, True
+        condiciones.extend(cond_agr)
+        params.update(params_agr)
 
     return " AND ".join(condiciones), params, False
 
