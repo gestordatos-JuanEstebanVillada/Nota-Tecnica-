@@ -1,5 +1,6 @@
 import io
 import json
+import time
 import traceback
 from datetime import date
 from typing import List, Optional
@@ -701,94 +702,221 @@ def obtener_config_eps_nota(cur, id_nota: int) -> dict:
     }
 
 
-def _pgp_resumen_sanitas(cur, f_ini: str, f_fin: str) -> list:
-    query = """
-        WITH base AS (
-            SELECT 
-                agrupaempresa,
-                tarifa,
-                codempresa,
-                empresa,
-                EXTRACT(MONTH FROM fecha) AS num_mes,
-                COUNT(DISTINCT identificacion) AS pacientes,
-                SUM(total) AS valor_total
-            FROM tmpbi1
-            WHERE codempresa IN ('10243', '10244')
-              AND tarifa = 'DN'
-              AND (fuente <> 'AC' OR fuente IS NULL)
-              AND TRUNC(fecha) BETWEEN TO_DATE(:fecha_inicio, 'YYYY-MM-DD') 
-                                   AND TO_DATE(:fecha_fin, 'YYYY-MM-DD')
-            GROUP BY 
-                agrupaempresa,
-                tarifa,
-                codempresa,
-                empresa,
-                EXTRACT(MONTH FROM fecha)
-        ),
-        despivote_metricas AS (
-            SELECT agrupaempresa, tarifa, codempresa, empresa, num_mes, 'Pacientes' AS metrica, 1 AS orden_m, pacientes AS valor FROM base
-            UNION ALL
-            SELECT agrupaempresa, tarifa, codempresa, empresa, num_mes, 'Total' AS metrica, 2 AS orden_m, valor_total AS valor FROM base
-        )
-        SELECT 
-            agrupaempresa,
-            tarifa,
-            codempresa,
-            empresa,
-            metrica,
-            NVL(enero, 0) AS enero,
-            NVL(febrero, 0) AS febrero,
-            NVL(marzo, 0) AS marzo,
-            NVL(abril, 0) AS abril,
-            NVL(mayo, 0) AS mayo,
-            NVL(junio, 0) AS junio,
-            NVL(julio, 0) AS julio,
-            NVL(agosto, 0) AS agosto,
-            NVL(septiembre, 0) AS septiembre,
-            NVL(octubre, 0) AS octubre,
-            NVL(noviembre, 0) AS noviembre,
-            NVL(diciembre, 0) AS diciembre
-        FROM despivote_metricas
-        PIVOT (
-            SUM(valor)
-            FOR num_mes IN (
-                1 AS enero, 2 AS febrero, 3 AS marzo, 4 AS abril,
-                5 AS mayo, 6 AS junio, 7 AS julio, 8 AS agosto,
-                9 AS septiembre, 10 AS octubre, 11 AS noviembre, 12 AS diciembre
-            )
-        )
-        ORDER BY 
-            codempresa,
-            orden_m
-    """
-    cur.execute(query, {"fecha_inicio": f_ini, "fecha_fin": f_fin})
-    filas = []
-    for r in cur.fetchall():
-        meses = [float(r[i] or 0) for i in range(5, 17)]
-        filas.append({
-            "agrupaempresa": r[0],
-            "tarifa": r[1],
-            "codempresa": r[2],
-            "empresa": r[3],
-            "metrica": r[4],
-            "enero": meses[0],
-            "febrero": meses[1],
-            "marzo": meses[2],
-            "abril": meses[3],
-            "mayo": meses[4],
-            "junio": meses[5],
-            "julio": meses[6],
-            "agosto": meses[7],
-            "septiembre": meses[8],
-            "octubre": meses[9],
-            "noviembre": meses[10],
-            "diciembre": meses[11],
-            "acumulado": sum(meses),
-        })
-    return filas
+def _condicion_empresa_pgp(codempresa: str) -> tuple[str, dict]:
+    if codempresa in ("10243", "10244"):
+        return "t.codempresa = :codempresa", {"codempresa": codempresa}
+    return "t.codempresa IN ('10243', '10244')", {}
 
 
-def _pgp_detalle_sanitas(cur, f_ini: str, f_fin: str) -> list:
+_MES_NUM_TO_KEY = {
+    1: "enero",
+    2: "febrero",
+    3: "marzo",
+    4: "abril",
+    5: "mayo",
+    6: "junio",
+    7: "julio",
+    8: "agosto",
+    9: "septiembre",
+    10: "octubre",
+    11: "noviembre",
+    12: "diciembre",
+}
+
+_MES_KEYS_PGP = list(_MES_NUM_TO_KEY.values())
+
+_CIE10_CACHE = {
+    "ts": 0.0,
+    "dx_to_agrupador": {},
+    "agrupador_to_dxs": {},
+    "agrupadores_ordenados": [],
+}
+
+_PGP_QUERY_CACHE: dict = {}
+_PGP_CACHE_MAX = 30
+_PGP_CACHE_TTL = 60
+
+_TMPBI1_COL_NOMBRE: dict = {"col": None}
+
+
+def _configurar_cursor_pgp(cur) -> None:
+    cur.arraysize = 5000
+    cur.prefetchrows = 5001
+
+
+def obtener_mapa_cie10(cur) -> dict:
+    ahora = time.time()
+    if _CIE10_CACHE["dx_to_agrupador"] and (ahora - _CIE10_CACHE["ts"] < 21600):
+        return _CIE10_CACHE
+
+    cur.execute("""
+        SELECT
+            UPPER(TRIM(i.diacod)) AS diacod,
+            MIN(TRIM(h.locnom)) AS locnom
+        FROM india i
+        INNER JOIN hiloc h ON i.diasub = h.loccod
+        WHERE i.diacod IS NOT NULL
+          AND h.locnom IS NOT NULL
+        GROUP BY UPPER(TRIM(i.diacod))
+    """)
+    dx_to_agr: dict[str, str] = {}
+    agr_to_dxs: dict[str, list[str]] = {}
+    for diacod, locnom in cur.fetchall():
+        if not diacod or not locnom:
+            continue
+        diacod_s = str(diacod).strip().upper()
+        locnom_s = str(locnom).strip()
+        dx_to_agr[diacod_s] = locnom_s
+        agr_to_dxs.setdefault(locnom_s, []).append(diacod_s)
+
+    agrupadores = sorted(agr_to_dxs.keys())
+    if "OTROS" not in agrupadores:
+        agrupadores.append("OTROS")
+
+    _CIE10_CACHE["ts"] = ahora
+    _CIE10_CACHE["dx_to_agrupador"] = dx_to_agr
+    _CIE10_CACHE["agrupador_to_dxs"] = agr_to_dxs
+    _CIE10_CACHE["agrupadores_ordenados"] = agrupadores
+    return _CIE10_CACHE
+
+
+def _pgp_cache_key(
+    id_nota: int,
+    f_ini: str,
+    f_fin: str,
+    codempresa: str,
+    agrupador: str,
+    dx1: str,
+    tipo: str,
+) -> str:
+    return (
+        f"{tipo}|{id_nota}|{f_ini}|{f_fin}|{codempresa}|{agrupador}|"
+        f"{(dx1 or '').strip().upper()}"
+    )
+
+
+def _pgp_cache_get(tipo: str, key: str):
+    entry = _PGP_QUERY_CACHE.get(key)
+    if not entry:
+        return None
+    if time.time() - entry["ts"] > _PGP_CACHE_TTL:
+        _PGP_QUERY_CACHE.pop(key, None)
+        return None
+    if entry.get("tipo") != tipo:
+        return None
+    return entry["data"]
+
+
+def _pgp_cache_set(tipo: str, key: str, data) -> None:
+    if len(_PGP_QUERY_CACHE) >= _PGP_CACHE_MAX:
+        oldest_key = min(_PGP_QUERY_CACHE, key=lambda k: _PGP_QUERY_CACHE[k]["ts"])
+        _PGP_QUERY_CACHE.pop(oldest_key, None)
+    _PGP_QUERY_CACHE[key] = {"ts": time.time(), "tipo": tipo, "data": data}
+
+
+def _condicion_fecha_pgp() -> str:
+    return (
+        "t.fecha >= TO_DATE(:fecha_inicio, 'YYYY-MM-DD') "
+        "AND t.fecha < TO_DATE(:fecha_fin, 'YYYY-MM-DD') + 1"
+    )
+
+
+def _condiciones_agrupador_pgp(
+    agrupador: str,
+    mapa_cie10: dict,
+) -> tuple[list[str], dict, bool]:
+    """Retorna (condiciones_extra, params_extra, resultado_vacio_inmediato)."""
+    if not agrupador or agrupador == "ALL":
+        return [], {}, False
+
+    if agrupador == "OTROS":
+        return [
+            """(
+                t.dx1 IS NULL OR NOT EXISTS (
+                    SELECT 1
+                    FROM india i
+                    INNER JOIN hiloc h ON i.diasub = h.loccod
+                    WHERE UPPER(TRIM(i.diacod)) = UPPER(TRIM(t.dx1))
+                      AND h.locnom IS NOT NULL
+                )
+            )"""
+        ], {}, False
+
+    agr_to_dxs = mapa_cie10.get("agrupador_to_dxs", {})
+    codigos = agr_to_dxs.get(agrupador)
+    if codigos is None:
+        agr_up = agrupador.strip().upper()
+        for nombre, cods in agr_to_dxs.items():
+            if nombre.strip().upper() == agr_up:
+                codigos = cods
+                break
+
+    if not codigos:
+        return [], {}, True
+
+    if len(codigos) <= 950:
+        binds = []
+        params: dict = {}
+        for i, cod in enumerate(codigos):
+            pname = f"dx_{i}"
+            binds.append(f":{pname}")
+            params[pname] = cod
+        return [f"UPPER(TRIM(t.dx1)) IN ({', '.join(binds)})"], params, False
+
+    return [
+        """EXISTS (
+            SELECT 1
+            FROM india i
+            INNER JOIN hiloc h ON i.diasub = h.loccod
+            WHERE UPPER(TRIM(i.diacod)) = UPPER(TRIM(t.dx1))
+              AND UPPER(TRIM(h.locnom)) = UPPER(TRIM(:agrupador))
+              AND h.locnom IS NOT NULL
+        )"""
+    ], {"agrupador": agrupador}, False
+
+
+def _construir_filtros_pgp(
+    f_ini: str,
+    f_fin: str,
+    codempresa: str = "ALL",
+    agrupador: str = "ALL",
+    dx1: str = "",
+    mapa_cie10: Optional[dict] = None,
+) -> tuple[str, dict, bool]:
+    dx1 = (dx1 or "").strip()
+    condiciones = [
+        "t.tarifa = 'DN'",
+        "(t.fuente <> 'AC' OR t.fuente IS NULL)",
+        _condicion_fecha_pgp(),
+    ]
+    params: dict = {"fecha_inicio": f_ini, "fecha_fin": f_fin}
+
+    if codempresa in ("10243", "10244"):
+        condiciones.append("t.codempresa = :codempresa")
+        params["codempresa"] = codempresa
+    else:
+        condiciones.append("t.codempresa IN ('10243', '10244')")
+
+    mapa = mapa_cie10 or _CIE10_CACHE
+    cond_agr, params_agr, vacio = _condiciones_agrupador_pgp(agrupador, mapa)
+    if vacio:
+        return "1=0", params, True
+    condiciones.extend(cond_agr)
+    params.update(params_agr)
+
+    if dx1:
+        condiciones.append(
+            "(UPPER(TRIM(t.dx1)) LIKE '%' || UPPER(TRIM(:dx1)) || '%' "
+            "OR UPPER(TRIM(t.dx1nom)) LIKE '%' || UPPER(TRIM(:dx1)) || '%')"
+        )
+        params["dx1"] = dx1
+
+    return " AND ".join(condiciones), params, False
+
+
+def _resolver_col_nombre_tmpbi1(cur) -> Optional[str]:
+    if _TMPBI1_COL_NOMBRE["col"] is not None:
+        return _TMPBI1_COL_NOMBRE["col"]
     cur.execute("""
         SELECT COLUMN_NAME
         FROM ALL_TAB_COLUMNS
@@ -800,34 +928,147 @@ def _pgp_detalle_sanitas(cur, f_ini: str, f_fin: str) -> list:
         (c for c in ("NOMBRES", "NOMBRE", "PACNOM", "NOMBRE_PACIENTE", "PACIENTE") if c in cols_disponibles),
         None,
     )
-    expr_nombre = f"{col_nombre} AS nombres" if col_nombre else "'' AS nombres"
+    _TMPBI1_COL_NOMBRE["col"] = col_nombre
+    return col_nombre
+
+
+def _pivot_resumen_pgp_python(rows_agregadas) -> list:
+    grupos: dict[tuple, dict] = {}
+    for agrupa, tarifa, codemp, empresa, num_mes, pacientes, valor_total in rows_agregadas:
+        if num_mes is None:
+            continue
+        mes_i = int(num_mes)
+        mes_key = _MES_NUM_TO_KEY.get(mes_i)
+        if not mes_key:
+            continue
+        key = (agrupa, tarifa, codemp, empresa)
+        if key not in grupos:
+            grupos[key] = {
+                "pacientes": {m: 0.0 for m in _MES_KEYS_PGP},
+                "total": {m: 0.0 for m in _MES_KEYS_PGP},
+            }
+        grupos[key]["pacientes"][mes_key] += float(pacientes or 0)
+        grupos[key]["total"][mes_key] += float(valor_total or 0)
+
+    filas = []
+    for (agrupa, tarifa, codemp, empresa), datos in sorted(grupos.items(), key=lambda x: (str(x[0][2]), str(x[0][0]))):
+        for metrica, meses_map in (("Pacientes", datos["pacientes"]), ("Total", datos["total"])):
+            acumulado = sum(meses_map.values())
+            fila = {
+                "agrupaempresa": agrupa,
+                "tarifa": tarifa,
+                "codempresa": codemp,
+                "empresa": empresa,
+                "metrica": metrica,
+                "acumulado": acumulado,
+            }
+            for mk in _MES_KEYS_PGP:
+                fila[mk] = meses_map[mk]
+            filas.append(fila)
+
+    filas.sort(key=lambda r: (str(r["codempresa"]), 0 if r["metrica"] == "Pacientes" else 1))
+    return filas
+
+
+def _pgp_resumen_sanitas(
+    cur,
+    mapa_cie10: dict,
+    f_ini: str,
+    f_fin: str,
+    codempresa: str = "ALL",
+    agrupador: str = "ALL",
+    dx1: str = "",
+) -> tuple[list, int]:
+    where_sql, params, vacio = _construir_filtros_pgp(
+        f_ini, f_fin, codempresa, agrupador, dx1, mapa_cie10
+    )
+    if vacio:
+        return [], 0
+
+    _configurar_cursor_pgp(cur)
+    query_agr = f"""
+        SELECT
+            GROUPING(t.agrupaempresa) AS g_agr,
+            GROUPING(t.codempresa) AS g_cod,
+            GROUPING(EXTRACT(MONTH FROM t.fecha)) AS g_mes,
+            t.agrupaempresa,
+            t.tarifa,
+            t.codempresa,
+            t.empresa,
+            EXTRACT(MONTH FROM t.fecha) AS num_mes,
+            COUNT(DISTINCT t.identificacion) AS pacientes_unicos,
+            SUM(NVL(t.total, 0)) AS valor_total
+        FROM tmpbi1 t
+        WHERE {where_sql}
+        GROUP BY GROUPING SETS (
+            (t.agrupaempresa, t.tarifa, t.codempresa, t.empresa, EXTRACT(MONTH FROM t.fecha)),
+            ()
+        )
+    """
+    cur.execute(query_agr, params)
+    rows_mensuales = []
+    pacientes_unicos_rango = 0
+    for g_agr, g_cod, g_mes, agrupa, tarifa, codemp, empresa, num_mes, pac, val in cur.fetchall():
+        if g_agr == 1 and g_cod == 1 and g_mes == 1:
+            pacientes_unicos_rango = int(pac or 0)
+        elif g_agr == 0 and g_mes == 0:
+            rows_mensuales.append((agrupa, tarifa, codemp, empresa, num_mes, pac, val))
+
+    filas = _pivot_resumen_pgp_python(rows_mensuales)
+    return filas, pacientes_unicos_rango
+
+
+def _pgp_detalle_sanitas(
+    cur,
+    mapa_cie10: dict,
+    f_ini: str,
+    f_fin: str,
+    codempresa: str = "ALL",
+    agrupador: str = "ALL",
+    dx1: str = "",
+) -> list:
+    where_sql, params, vacio = _construir_filtros_pgp(
+        f_ini, f_fin, codempresa, agrupador, dx1, mapa_cie10
+    )
+    if vacio:
+        return []
+
+    col_nombre = _resolver_col_nombre_tmpbi1(cur)
+    col_nombre_sql = f"t.{col_nombre}" if col_nombre else "''"
+    dx_to_agr = mapa_cie10.get("dx_to_agrupador", {})
 
     query = f"""
-        SELECT 
-            TO_CHAR(TRUNC(fecha), 'YYYY-MM-DD') AS fecha,
-            TO_CHAR(fecha, 'YYYY-MM') AS mes,
-            agrupaempresa,
-            tarifa,
-            codempresa,
-            empresa,
-            fuente,
-            identificacion,
-            {expr_nombre},
-            NVL(total, 0) AS total
-        FROM tmpbi1
-        WHERE codempresa IN ('10243', '10244')
-          AND tarifa = 'DN'
-          AND (fuente <> 'AC' OR fuente IS NULL)
-          AND TRUNC(fecha) BETWEEN TO_DATE(:fecha_inicio, 'YYYY-MM-DD') 
-                               AND TO_DATE(:fecha_fin, 'YYYY-MM-DD')
-        ORDER BY 
-            fecha ASC,
-            codempresa ASC,
-            identificacion ASC
+        SELECT
+            TO_CHAR(TRUNC(t.fecha), 'YYYY-MM-DD') AS fecha,
+            TO_CHAR(t.fecha, 'YYYY-MM') AS mes,
+            t.agrupaempresa,
+            t.tarifa,
+            t.codempresa,
+            CASE t.codempresa
+                WHEN '10243' THEN 'EPS SANITAS CONTRIBUTIVO'
+                WHEN '10244' THEN 'EPS SANITAS SUBSIDIADO'
+                ELSE t.empresa
+            END AS empresa,
+            t.fuente,
+            t.identificacion,
+            {col_nombre_sql} AS nombre_paciente,
+            t.dx1,
+            t.dx1nom,
+            NVL(t.total, 0) AS total
+        FROM tmpbi1 t
+        WHERE {where_sql}
+        ORDER BY
+            t.fecha ASC,
+            t.codempresa ASC,
+            t.identificacion ASC
     """
-    cur.execute(query, {"fecha_inicio": f_ini, "fecha_fin": f_fin})
-    return [
-        {
+    _configurar_cursor_pgp(cur)
+    cur.execute(query, params)
+    registros = []
+    for r in cur.fetchall():
+        dx1_val = str(r[9] or "").strip()
+        agrupador_row = dx_to_agr.get(dx1_val.upper(), "OTROS")
+        registros.append({
             "fecha": r[0],
             "mes": r[1],
             "agrupaempresa": r[2],
@@ -837,10 +1078,12 @@ def _pgp_detalle_sanitas(cur, f_ini: str, f_fin: str) -> list:
             "fuente": r[6] or "",
             "identificacion": str(r[7] or ""),
             "nombres": str(r[8] or "").strip(),
-            "total": float(r[9] or 0),
-        }
-        for r in cur.fetchall()
-    ]
+            "agrupador": agrupador_row,
+            "dx1": dx1_val,
+            "dx1nom": str(r[10] or "").strip(),
+            "total": float(r[11] or 0),
+        })
+    return registros
 
 
 @app.get("/api/notas-tecnicas/{id_nota}/pgp-resumen-mensual")
@@ -848,6 +1091,9 @@ def obtener_resumen_mensual_pgp_por_nota(
     id_nota: int,
     fecha_inicio: Optional[str] = Query(None),
     fecha_fin: Optional[str] = Query(None),
+    codempresa: str = Query("ALL"),
+    agrupador: str = Query("ALL"),
+    dx1: str = Query(""),
     user=Depends(get_current_user),
 ):
     anio_actual = date.today().year
@@ -864,22 +1110,37 @@ def obtener_resumen_mensual_pgp_por_nota(
                 "contratante": eps_info["contratante"],
                 "fecha_inicio": f_ini,
                 "fecha_fin": f_fin,
+                "agrupadores": [],
                 "data": [],
             }
         if eps_info["eps_key"] == "SANITAS":
-            filas = _pgp_resumen_sanitas(cur, f_ini, f_fin)
-            return {
+            cache_key = _pgp_cache_key(id_nota, f_ini, f_fin, codempresa, agrupador, dx1, "resumen")
+            cached = _pgp_cache_get("resumen", cache_key)
+            if cached is not None:
+                return cached
+
+            mapa_cie10 = obtener_mapa_cie10(cur)
+            lista_agrupadores = list(mapa_cie10.get("agrupadores_ordenados", []))
+            filas, pacientes_unicos = _pgp_resumen_sanitas(
+                cur, mapa_cie10, f_ini, f_fin, codempresa, agrupador, dx1
+            )
+            payload = {
                 "configurado": True,
                 "contratante": eps_info["contratante"],
                 "fecha_inicio": f_ini,
                 "fecha_fin": f_fin,
+                "agrupadores": lista_agrupadores,
+                "pacientes_unicos_rango": pacientes_unicos,
                 "data": filas,
             }
+            _pgp_cache_set("resumen", cache_key, payload)
+            return payload
         return {
             "configurado": False,
             "contratante": eps_info["contratante"],
             "fecha_inicio": f_ini,
             "fecha_fin": f_fin,
+            "agrupadores": [],
             "data": [],
         }
     except HTTPException:
@@ -897,6 +1158,9 @@ def obtener_detalle_pacientes_pgp_por_nota(
     id_nota: int,
     fecha_inicio: Optional[str] = Query(None),
     fecha_fin: Optional[str] = Query(None),
+    codempresa: str = Query("ALL"),
+    agrupador: str = Query("ALL"),
+    dx1: str = Query(""),
     user=Depends(get_current_user),
 ):
     anio_actual = date.today().year
@@ -917,8 +1181,16 @@ def obtener_detalle_pacientes_pgp_por_nota(
                 "data": [],
             }
         if eps_info["eps_key"] == "SANITAS":
-            registros = _pgp_detalle_sanitas(cur, f_ini, f_fin)
-            return {
+            cache_key = _pgp_cache_key(id_nota, f_ini, f_fin, codempresa, agrupador, dx1, "detalle")
+            cached = _pgp_cache_get("detalle", cache_key)
+            if cached is not None:
+                return cached
+
+            mapa_cie10 = obtener_mapa_cie10(cur)
+            registros = _pgp_detalle_sanitas(
+                cur, mapa_cie10, f_ini, f_fin, codempresa, agrupador, dx1
+            )
+            payload = {
                 "configurado": True,
                 "contratante": eps_info["contratante"],
                 "fecha_inicio": f_ini,
@@ -926,6 +1198,8 @@ def obtener_detalle_pacientes_pgp_por_nota(
                 "total_registros": len(registros),
                 "data": registros,
             }
+            _pgp_cache_set("detalle", cache_key, payload)
+            return payload
         return {
             "configurado": False,
             "contratante": eps_info["contratante"],

@@ -1,4 +1,17 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  LabelList,
+} from "recharts";
+import faviconSvg from "../IMG/logo.svg";
 import logoLiga from "../IMG/logo.png";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
@@ -76,6 +89,27 @@ const MESES_KEYS = [
   "acumulado",
 ];
 
+const OPCIONES_EMPRESA_PGP = [
+  { value: "ALL", label: "Todas (10243 Contributivo + 10244 Subsidiado)" },
+  { value: "10243", label: "10243 · EPS SANITAS CONTRIBUTIVO" },
+  { value: "10244", label: "10244 · EPS SANITAS SUBSIDIADO" },
+];
+
+const MESES_GRAFICA = [
+  { key: "enero", corto: "Ene", largo: "Enero" },
+  { key: "febrero", corto: "Feb", largo: "Febrero" },
+  { key: "marzo", corto: "Mar", largo: "Marzo" },
+  { key: "abril", corto: "Abr", largo: "Abril" },
+  { key: "mayo", corto: "May", largo: "Mayo" },
+  { key: "junio", corto: "Jun", largo: "Junio" },
+  { key: "julio", corto: "Jul", largo: "Julio" },
+  { key: "agosto", corto: "Ago", largo: "Agosto" },
+  { key: "septiembre", corto: "Sep", largo: "Septiembre" },
+  { key: "octubre", corto: "Oct", largo: "Octubre" },
+  { key: "noviembre", corto: "Nov", largo: "Noviembre" },
+  { key: "diciembre", corto: "Dic", largo: "Diciembre" },
+];
+
 const MESES_PGP_LABELS = [
   "Enero",
   "Febrero",
@@ -92,6 +126,50 @@ const MESES_PGP_LABELS = [
 ];
 
 const PAGE_SIZE_PACIENTES = 50;
+
+function CustomTooltipPacientes({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className="bg-white/95 backdrop-blur-xs border border-slate-200 shadow-xl rounded-xl p-3 text-xs text-slate-700 min-w-[210px]">
+      <p className="font-bold text-[#1B2A59] text-sm mb-1.5 border-b border-slate-100 pb-1">{d.largo}</p>
+      <div className="flex items-center justify-between font-bold text-[#1B2A59] mb-1">
+        <span>Total Pacientes:</span>
+        <span>{Math.round(d.pacientesTotal).toLocaleString("es-CO")}</span>
+      </div>
+      <div className="flex items-center justify-between text-slate-600">
+        <span>10243 Contributivo:</span>
+        <span className="font-semibold">{Math.round(d.pacientes10243).toLocaleString("es-CO")}</span>
+      </div>
+      <div className="flex items-center justify-between text-slate-600">
+        <span>10244 Subsidiado:</span>
+        <span className="font-semibold">{Math.round(d.pacientes10244).toLocaleString("es-CO")}</span>
+      </div>
+    </div>
+  );
+}
+
+function CustomTooltipValorPgp({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className="bg-white/95 backdrop-blur-xs border border-[#F2C6D4] shadow-xl rounded-xl p-3 text-xs text-slate-700 min-w-[235px]">
+      <p className="font-bold text-[#D81B60] text-sm mb-1.5 border-b border-[#FCE7EF] pb-1">{d.largo}</p>
+      <div className="flex items-center justify-between font-bold text-[#1B2A59] mb-1">
+        <span>Valor Total PGP:</span>
+        <span>$ {Math.round(d.valorTotal).toLocaleString("es-CO")}</span>
+      </div>
+      <div className="flex items-center justify-between text-slate-600">
+        <span>10243 Contributivo:</span>
+        <span className="font-semibold">$ {Math.round(d.valor10243).toLocaleString("es-CO")}</span>
+      </div>
+      <div className="flex items-center justify-between text-slate-600">
+        <span>10244 Subsidiado:</span>
+        <span className="font-semibold">$ {Math.round(d.valor10244).toLocaleString("es-CO")}</span>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("nt_token") || "");
@@ -128,12 +206,43 @@ export default function App() {
   const [subVistaPgp, setSubVistaPgp] = useState("MENSUAL");
   const [resumenPgp, setResumenPgp] = useState([]);
   const [detallePacientesPgp, setDetallePacientesPgp] = useState([]);
-  const [loadingPgp, setLoadingPgp] = useState(false);
+  const [cargandoResumenPgp, setCargandoResumenPgp] = useState(false);
+  const [cargandoDetallePgp, setCargandoDetallePgp] = useState(false);
+  const [pacientesUnicosRango, setPacientesUnicosRango] = useState(null);
+  const loadingPgp = cargandoResumenPgp || cargandoDetallePgp;
   const [busquedaPaciente, setBusquedaPaciente] = useState("");
   const [paginaPacientes, setPaginaPacientes] = useState(1);
   const [pgpConfigurado, setPgpConfigurado] = useState(true);
+  const [pgpCodEmpresa, setPgpCodEmpresa] = useState("ALL");
+  const [pgpAgrupador, setPgpAgrupador] = useState("ALL"); // locnom (hiloc); 'OTROS' si sin cruce
+  const [pgpDx1Input, setPgpDx1Input] = useState("");
+  const [opcionesAgrupador, setOpcionesAgrupador] = useState([]);
+  const [dropdownEmpresaOpen, setDropdownEmpresaOpen] = useState(false);
+  const [dropdownAgrupadorOpen, setDropdownAgrupadorOpen] = useState(false);
+  const [busquedaAgrupador, setBusquedaAgrupador] = useState("");
+  const dropdownEmpresaRef = useRef(null);
+  const dropdownAgrupadorRef = useRef(null);
+  const [mostrarGraficasPgp, setMostrarGraficasPgp] = useState(true);
+  const [pgpFiltrosAplicados, setPgpFiltrosAplicados] = useState({
+    fechaInicio: `${anioActual}-01-01`,
+    fechaFin: `${anioActual}-12-31`,
+    codEmpresa: "ALL",
+    agrupador: "ALL",
+    dx1: "",
+  });
 
   const authHeaders = { Authorization: `Bearer ${token}` };
+
+  useEffect(() => {
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.type = "image/svg+xml";
+    link.href = faviconSvg;
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem("nt_token");
@@ -150,6 +259,21 @@ export default function App() {
     setPgpConfigurado(true);
     setBusquedaPaciente("");
     setPaginaPacientes(1);
+    setPgpCodEmpresa("ALL");
+    setPgpAgrupador("ALL");
+    setPgpDx1Input("");
+    setOpcionesAgrupador([]);
+    setDropdownEmpresaOpen(false);
+    setDropdownAgrupadorOpen(false);
+    setBusquedaAgrupador("");
+    setPgpFiltrosAplicados({
+      fechaInicio: `${anioActual}-01-01`,
+      fechaFin: `${anioActual}-12-31`,
+      codEmpresa: "ALL",
+      agrupador: "ALL",
+      dx1: "",
+    });
+    setPacientesUnicosRango(null);
   };
 
   const cargarDetalleNota = async (idNota) => {
@@ -208,34 +332,95 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  const cargarDatosPgp = async (idNota = nota?.id_nota, fIni = pgpFechaInicio, fFin = pgpFechaFin) => {
+  const cargarDatosPgp = async (
+    idNota = nota?.id_nota,
+    fIni = pgpFechaInicio,
+    fFin = pgpFechaFin,
+    codEmp = pgpCodEmpresa,
+    agr = pgpAgrupador,
+    dx1Val = pgpDx1Input
+  ) => {
     if (!idNota) return;
-    setLoadingPgp(true);
-    try {
-      const q = `fecha_inicio=${encodeURIComponent(fIni)}&fecha_fin=${encodeURIComponent(fFin)}`;
-      const [resM, resD] = await Promise.all([
-        fetch(`${API_URL}/notas-tecnicas/${idNota}/pgp-resumen-mensual?${q}`, { headers: authHeaders }),
-        fetch(`${API_URL}/notas-tecnicas/${idNota}/pgp-detalle-pacientes?${q}`, { headers: authHeaders }),
-      ]);
-      if (resM.status === 401 || resD.status === 401) return handleLogout();
-      const dataM = await resM.json();
-      const dataD = await resD.json();
-      if (!resM.ok) throw new Error(dataM.detail || "Error al cargar resumen PGP");
-      if (!resD.ok) throw new Error(dataD.detail || "Error al cargar detalle de pacientes");
-      setPgpConfigurado(dataM.configurado !== false && dataD.configurado !== false);
-      setResumenPgp(dataM.data || []);
-      setDetallePacientesPgp(dataD.data || []);
-      setPaginaPacientes(1);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setLoadingPgp(false);
-    }
+    setCargandoResumenPgp(true);
+    setCargandoDetallePgp(true);
+
+    const params = new URLSearchParams({
+      fecha_inicio: fIni,
+      fecha_fin: fFin,
+      codempresa: codEmp || "ALL",
+      agrupador: agr || "ALL",
+      dx1: (dx1Val || "").trim(),
+    });
+
+    const reqResumen = fetch(
+      `${API_URL}/notas-tecnicas/${idNota}/pgp-resumen-mensual?${params.toString()}`,
+      { headers: authHeaders }
+    )
+      .then(async (res) => {
+        if (res.status === 401) {
+          handleLogout();
+          throw new Error("Sesión expirada");
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Error cargando resumen mensual PGP");
+        setPgpConfigurado(data.configurado !== false);
+        setResumenPgp(data.data || []);
+        if (Array.isArray(data.agrupadores)) {
+          setOpcionesAgrupador(data.agrupadores);
+        }
+        if (typeof data.pacientes_unicos_rango === "number") {
+          setPacientesUnicosRango(data.pacientes_unicos_rango);
+        }
+        setPaginaPacientes(1);
+        setPgpFiltrosAplicados({
+          fechaInicio: fIni,
+          fechaFin: fFin,
+          codEmpresa: codEmp || "ALL",
+          agrupador: agr || "ALL",
+          dx1: (dx1Val || "").trim(),
+        });
+      })
+      .catch((err) => {
+        console.error(err);
+        alert(err.message);
+      })
+      .finally(() => setCargandoResumenPgp(false));
+
+    const reqDetalle = fetch(
+      `${API_URL}/notas-tecnicas/${idNota}/pgp-detalle-pacientes?${params.toString()}`,
+      { headers: authHeaders }
+    )
+      .then(async (res) => {
+        if (res.status === 401) {
+          handleLogout();
+          throw new Error("Sesión expirada");
+        }
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Error cargando detalle de pacientes PGP");
+        setDetallePacientesPgp(data.data || []);
+        if (data.configurado === false) {
+          setPgpConfigurado(false);
+        }
+      })
+      .catch((err) => {
+        console.error(err);
+        alert(err.message);
+      })
+      .finally(() => setCargandoDetallePgp(false));
+
+    await Promise.all([reqResumen, reqDetalle]);
   };
 
   useEffect(() => {
     if (token && vistaActiva === "PACIENTES_PGP" && nota?.id_nota) {
-      cargarDatosPgp(nota.id_nota);
+      cargarDatosPgp(
+        nota.id_nota,
+        pgpFechaInicio,
+        pgpFechaFin,
+        pgpCodEmpresa,
+        pgpAgrupador,
+        pgpDx1Input
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, vistaActiva, nota?.id_nota]);
@@ -243,6 +428,19 @@ export default function App() {
   useEffect(() => {
     setPaginaPacientes(1);
   }, [busquedaPaciente, subVistaPgp]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownAgrupadorRef.current && !dropdownAgrupadorRef.current.contains(event.target)) {
+        setDropdownAgrupadorOpen(false);
+      }
+      if (dropdownEmpresaRef.current && !dropdownEmpresaRef.current.contains(event.target)) {
+        setDropdownEmpresaOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleImportExcel = async (e) => {
     const file = e.target.files?.[0];
@@ -555,10 +753,13 @@ export default function App() {
     const totalPacientesAcum = resumenPgp
       .filter((r) => r.metrica === "Pacientes")
       .reduce((s, r) => s + (r.acumulado || 0), 0);
-    const pacientesUnicos = new Set(detallePacientesPgp.map((p) => p.identificacion)).size;
+    const pacientesUnicos =
+      typeof pacientesUnicosRango === "number"
+        ? pacientesUnicosRango
+        : new Set(detallePacientesPgp.map((p) => p.identificacion)).size;
     const valorTotal = detallePacientesPgp.reduce((s, p) => s + (p.total || 0), 0);
     return { totalPacientesAcum, pacientesUnicos, valorTotal };
-  }, [resumenPgp, detallePacientesPgp]);
+  }, [resumenPgp, detallePacientesPgp, pacientesUnicosRango]);
 
   const totalesVerticalesPgp = useMemo(() => {
     const sumaPacientes = {};
@@ -576,6 +777,41 @@ export default function App() {
     });
 
     return { pacientes: sumaPacientes, total: sumaTotal };
+  }, [resumenPgp]);
+
+  const datosGraficasMensualesPgp = useMemo(() => {
+    return MESES_GRAFICA.map((m) => {
+      let pacientesTotal = 0;
+      let pacientes10243 = 0;
+      let pacientes10244 = 0;
+      let valorTotal = 0;
+      let valor10243 = 0;
+      let valor10244 = 0;
+
+      resumenPgp.forEach((row) => {
+        const val = Number(row[m.key]) || 0;
+        const cod = String(row.codempresa || "");
+        if (row.metrica === "Pacientes") {
+          pacientesTotal += val;
+          if (cod === "10243") pacientes10243 += val;
+          if (cod === "10244") pacientes10244 += val;
+        } else {
+          valorTotal += val;
+          if (cod === "10243") valor10243 += val;
+          if (cod === "10244") valor10244 += val;
+        }
+      });
+
+      return {
+        ...m,
+        pacientesTotal,
+        pacientes10243,
+        pacientes10244,
+        valorTotal,
+        valor10243,
+        valor10244,
+      };
+    });
   }, [resumenPgp]);
 
   const detallePacientesFiltrados = useMemo(() => {
@@ -596,16 +832,74 @@ export default function App() {
     return detallePacientesFiltrados.slice(start, start + PAGE_SIZE_PACIENTES);
   }, [detallePacientesFiltrados, paginaPacientes]);
 
-  const handleFiltrarPgp = () => {
-    if (nota?.id_nota) cargarDatosPgp(nota.id_nota, pgpFechaInicio, pgpFechaFin);
+  const agrupadoresFiltradosDropdown = useMemo(() => {
+    const q = busquedaAgrupador
+      .trim()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "");
+    if (!q) return opcionesAgrupador;
+    return opcionesAgrupador.filter((agr) =>
+      agr
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .includes(q)
+    );
+  }, [opcionesAgrupador, busquedaAgrupador]);
+
+  const filtrosPgpPendientes = useMemo(
+    () =>
+      pgpFechaInicio !== pgpFiltrosAplicados.fechaInicio ||
+      pgpFechaFin !== pgpFiltrosAplicados.fechaFin ||
+      pgpCodEmpresa !== pgpFiltrosAplicados.codEmpresa ||
+      pgpAgrupador !== pgpFiltrosAplicados.agrupador ||
+      (pgpDx1Input || "").trim() !== (pgpFiltrosAplicados.dx1 || "").trim(),
+    [
+      pgpFechaInicio,
+      pgpFechaFin,
+      pgpCodEmpresa,
+      pgpAgrupador,
+      pgpDx1Input,
+      pgpFiltrosAplicados,
+    ]
+  );
+
+  const aplicarFiltrosPgp = () => {
+    if (!nota?.id_nota) return;
+    setDropdownEmpresaOpen(false);
+    setDropdownAgrupadorOpen(false);
+    setPaginaPacientes(1);
+    cargarDatosPgp(
+      nota.id_nota,
+      pgpFechaInicio,
+      pgpFechaFin,
+      pgpCodEmpresa,
+      pgpAgrupador,
+      pgpDx1Input
+    );
   };
+
+  const handleLimpiarFiltrosPgp = () => {
+    setPgpCodEmpresa("ALL");
+    setPgpAgrupador("ALL");
+    setPgpDx1Input("");
+    setDropdownEmpresaOpen(false);
+    setDropdownAgrupadorOpen(false);
+    setPaginaPacientes(1);
+    if (nota?.id_nota) {
+      cargarDatosPgp(nota.id_nota, pgpFechaInicio, pgpFechaFin, "ALL", "ALL", "");
+    }
+  };
+
+  const filtrosPgpActivos =
+    pgpCodEmpresa !== "ALL" || pgpAgrupador !== "ALL" || Boolean(pgpDx1Input.trim());
 
   const handleAnioActualPgp = () => {
     const ini = `${anioActual}-01-01`;
     const fin = `${anioActual}-12-31`;
     setPgpFechaInicio(ini);
     setPgpFechaFin(fin);
-    if (nota?.id_nota) cargarDatosPgp(nota.id_nota, ini, fin);
   };
 
   const renderVistaPacientesPgp = () => {
@@ -647,12 +941,19 @@ export default function App() {
             </div>
             <button
               type="button"
-              onClick={handleFiltrarPgp}
+              onClick={aplicarFiltrosPgp}
               disabled={loadingPgp}
-              className="bg-[#D81B60] hover:bg-[#B81450] disabled:opacity-60 text-white font-semibold text-xs px-4 py-2.5 rounded-md cursor-pointer"
+              className={`bg-[#D81B60] hover:bg-[#B81450] disabled:opacity-60 text-white font-semibold text-xs px-4 py-2.5 rounded-md cursor-pointer ${
+                filtrosPgpPendientes ? "ring-2 ring-amber-300 ring-offset-1" : ""
+              }`}
             >
               {loadingPgp ? "Consultando..." : "Filtrar por Fecha"}
             </button>
+            {filtrosPgpPendientes && (
+              <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md">
+                Filtros pendientes — pulsa Filtrar
+              </span>
+            )}
             <button
               type="button"
               onClick={handleAnioActualPgp}
@@ -661,6 +962,243 @@ export default function App() {
             >
               Año Actual (Ene - Dic)
             </button>
+          </div>
+          <div className="flex flex-wrap items-end gap-3 pt-1 border-t border-[#F2C6D4]/60">
+            <div ref={dropdownEmpresaRef} className="relative">
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Empresa / Régimen</label>
+              <button
+                type="button"
+                onClick={() => {
+                  setDropdownEmpresaOpen((prev) => !prev);
+                  setDropdownAgrupadorOpen(false);
+                }}
+                className={`w-80 px-3 py-2 text-sm bg-white border rounded-lg text-left flex items-center justify-between gap-2 transition cursor-pointer ${
+                  dropdownEmpresaOpen
+                    ? "border-[#D81B60] ring-2 ring-[#D81B60]/15"
+                    : "border-slate-300 hover:border-slate-400"
+                }`}
+              >
+                <span className="truncate font-medium text-slate-800">
+                  {OPCIONES_EMPRESA_PGP.find((opt) => opt.value === pgpCodEmpresa)?.label ||
+                    "Todas (10243 Contributivo + 10244 Subsidiado)"}
+                </span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className={`w-4 h-4 shrink-0 text-slate-500 transition-transform ${
+                    dropdownEmpresaOpen ? "rotate-180 text-[#D81B60]" : ""
+                  }`}
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+
+              {dropdownEmpresaOpen && (
+                <div className="absolute left-0 mt-1.5 w-80 sm:w-96 bg-white border border-[#F2C6D4] rounded-xl shadow-xl z-40 overflow-hidden">
+                  <div className="max-h-64 overflow-y-auto custom-scrollbar py-1 divide-y divide-slate-100">
+                    {OPCIONES_EMPRESA_PGP.map((opt) => {
+                      const activo = pgpCodEmpresa === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            setPgpCodEmpresa(opt.value);
+                            setDropdownEmpresaOpen(false);
+                          }}
+                          className={`w-full px-3.5 py-2.5 text-left text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
+                            activo
+                              ? "bg-[#FCE7EF] text-[#D81B60] font-bold"
+                              : "text-slate-700 hover:bg-slate-50 font-medium"
+                          }`}
+                        >
+                          <span className="leading-snug">{opt.label}</span>
+                          {activo && <span className="shrink-0">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div ref={dropdownAgrupadorRef} className="relative">
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Agrupador</label>
+              <button
+                type="button"
+                onClick={() => {
+                  setDropdownAgrupadorOpen((prev) => !prev);
+                  setDropdownEmpresaOpen(false);
+                  setBusquedaAgrupador("");
+                }}
+                className={`w-72 px-3 py-2 text-sm bg-white border rounded-lg text-left flex items-center justify-between gap-2 transition cursor-pointer ${
+                  dropdownAgrupadorOpen
+                    ? "border-[#D81B60] ring-2 ring-[#D81B60]/15"
+                    : "border-slate-300 hover:border-slate-400"
+                }`}
+              >
+                <span className="truncate font-medium text-slate-800">
+                  {pgpAgrupador === "ALL"
+                    ? `Todos los Agrupadores (${opcionesAgrupador.length})`
+                    : pgpAgrupador}
+                </span>
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className={`w-4 h-4 shrink-0 text-slate-500 transition-transform ${
+                    dropdownAgrupadorOpen ? "rotate-180 text-[#D81B60]" : ""
+                  }`}
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              </button>
+
+              {dropdownAgrupadorOpen && (
+                <div className="absolute left-0 mt-1.5 w-80 sm:w-96 bg-white border border-[#F2C6D4] rounded-xl shadow-xl z-40 overflow-hidden">
+                  <div className="p-2.5 bg-[#FDF7F9] border-b border-[#F2C6D4]">
+                    <div className="relative">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        className="w-4 h-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2"
+                      >
+                        <path
+                          fillRule="evenodd"
+                          d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                      <input
+                        type="text"
+                        autoFocus
+                        value={busquedaAgrupador}
+                        onChange={(e) => setBusquedaAgrupador(e.target.value)}
+                        placeholder="Buscar agrupador..."
+                        className="w-full pl-8 pr-7 py-1.5 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 focus:outline-none focus:border-[#D81B60]"
+                      />
+                      {busquedaAgrupador && (
+                        <button
+                          type="button"
+                          onClick={() => setBusquedaAgrupador("")}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#D81B60] text-xs font-bold cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="max-h-64 overflow-y-auto custom-scrollbar py-1 divide-y divide-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPgpAgrupador("ALL");
+                        setDropdownAgrupadorOpen(false);
+                        setBusquedaAgrupador("");
+                      }}
+                      className={`w-full px-3.5 py-2 text-left text-xs flex items-center justify-between transition cursor-pointer ${
+                        pgpAgrupador === "ALL"
+                          ? "bg-[#FCE7EF] text-[#D81B60] font-bold"
+                          : "text-slate-700 hover:bg-slate-50 font-medium"
+                      }`}
+                    >
+                      <span>Todos los Agrupadores ({opcionesAgrupador.length})</span>
+                      {pgpAgrupador === "ALL" && <span>✓</span>}
+                    </button>
+
+                    {agrupadoresFiltradosDropdown.length === 0 ? (
+                      <div className="px-4 py-6 text-center text-xs text-slate-400">
+                        No se encontraron agrupadores para &quot;{busquedaAgrupador}&quot;
+                      </div>
+                    ) : (
+                      agrupadoresFiltradosDropdown.map((agr) => {
+                        const activo = pgpAgrupador === agr;
+                        return (
+                          <button
+                            key={agr}
+                            type="button"
+                            onClick={() => {
+                              setPgpAgrupador(agr);
+                              setDropdownAgrupadorOpen(false);
+                              setBusquedaAgrupador("");
+                            }}
+                            className={`w-full px-3.5 py-2 text-left text-xs flex items-center justify-between gap-2 transition cursor-pointer ${
+                              activo
+                                ? "bg-[#FCE7EF] text-[#D81B60] font-bold"
+                                : "text-slate-700 hover:bg-slate-50"
+                            }`}
+                          >
+                            <span className="leading-snug">{agr}</span>
+                            {activo && <span className="shrink-0">✓</span>}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Código CIE-10 (dx1)</label>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={pgpDx1Input}
+                    onChange={(e) => setPgpDx1Input(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        aplicarFiltrosPgp();
+                      }
+                    }}
+                    placeholder="Ej: C509 o MAMA..."
+                    className="px-3 py-2 pr-7 text-sm bg-white border border-slate-300 rounded-lg text-slate-800 w-44 uppercase placeholder:normal-case focus:outline-none focus:border-[#D81B60]"
+                  />
+                  {pgpDx1Input && (
+                    <button
+                      type="button"
+                      onClick={() => setPgpDx1Input("")}
+                      title="Borrar texto CIE-10"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#D81B60] text-xs font-bold cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={aplicarFiltrosPgp}
+                  disabled={loadingPgp}
+                  className={`px-4 py-2 text-sm font-semibold text-white bg-[#D81B60] hover:bg-[#B81450] disabled:opacity-60 rounded-lg shadow-xs transition cursor-pointer whitespace-nowrap ${
+                    filtrosPgpPendientes ? "ring-2 ring-amber-300 ring-offset-1" : ""
+                  }`}
+                >
+                  {loadingPgp ? "Consultando..." : "Filtrar"}
+                </button>
+              </div>
+            </div>
+            {filtrosPgpActivos && (
+              <button
+                type="button"
+                onClick={handleLimpiarFiltrosPgp}
+                disabled={loadingPgp}
+                className="text-xs font-semibold px-3 py-2 rounded-lg border border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100 cursor-pointer"
+              >
+                Limpiar Filtros
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -709,6 +1247,155 @@ export default function App() {
             <p className="text-xs text-slate-500 mt-1">Suma detalle tmpbi1</p>
           </div>
         </section>
+
+        {subVistaPgp === "MENSUAL" && resumenPgp.length > 0 && (
+          <section className="bg-white border border-[#F2C6D4] rounded-xl shadow-sm p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <h3 className="text-sm font-bold text-[#1B2A59]">Gráficas del consolidado mensual</h3>
+              <button
+                type="button"
+                onClick={() => setMostrarGraficasPgp((v) => !v)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-[#F2C6D4] text-[#1B2A59] bg-[#FDF7F9] hover:bg-[#FCE7EF] cursor-pointer"
+              >
+                {mostrarGraficasPgp ? "Ocultar gráficas" : "Mostrar gráficas"}
+              </button>
+            </div>
+
+            {mostrarGraficasPgp && (
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 mb-5">
+                <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                    <div>
+                      <h4 className="text-sm font-bold text-[#1B2A59]">Pacientes Atendidos · Mes a Mes</h4>
+                      <p className="text-xs text-slate-500">
+                        Distribución mensual de atenciones según filtros aplicados
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-[#EEF2FF] text-[#1B2A59] border border-[#C7D2FE]">
+                      {pgpFiltrosAplicados.fechaInicio} a {pgpFiltrosAplicados.fechaFin}
+                    </span>
+                  </div>
+                  {datosGraficasMensualesPgp.every((d) => d.pacientesTotal === 0) ? (
+                    <p className="text-xs text-slate-500 text-center py-16">
+                      Sin movimientos registrados en el rango de fechas seleccionado.
+                    </p>
+                  ) : (
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={datosGraficasMensualesPgp} margin={{ top: 12, right: 4, left: -10, bottom: 4 }}>
+                          <defs>
+                            <linearGradient id="gradPacientesPgp" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#1B2A59" stopOpacity={1} />
+                              <stop offset="100%" stopColor="#3B5998" stopOpacity={0.82} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid stroke="#E2E8F0" strokeDasharray="3 3" vertical={false} />
+                          <XAxis
+                            dataKey="corto"
+                            axisLine={{ stroke: "#CBD5E1" }}
+                            tickLine={false}
+                            tick={{ fill: "#475569", fontSize: 12, fontWeight: 600 }}
+                          />
+                          <YAxis
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fill: "#64748B", fontSize: 11 }}
+                          />
+                          <Tooltip content={<CustomTooltipPacientes />} cursor={{ fill: "#F1F5F9", radius: 6 }} />
+                          <Bar
+                            dataKey="pacientesTotal"
+                            fill="url(#gradPacientesPgp)"
+                            radius={[6, 6, 0, 0]}
+                            maxBarSize={36}
+                            animationDuration={500}
+                          >
+                            <LabelList
+                              dataKey="pacientesTotal"
+                              position="top"
+                              formatter={(val) => (val > 0 ? Math.round(val).toLocaleString("es-CO") : "")}
+                              style={{ fill: "#1B2A59", fontSize: 11, fontWeight: 700 }}
+                            />
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-white border border-[#F2C6D4] rounded-2xl p-5 shadow-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
+                    <div>
+                      <h4 className="text-sm font-bold text-[#1B2A59]">Valor Total PGP ($) · Mes a Mes</h4>
+                      <p className="text-xs text-slate-500">
+                        Comportamiento mensual facturado en millones de pesos
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-[#FCE7EF] text-[#D81B60] border border-[#F2C6D4]">
+                      {pgpFiltrosAplicados.fechaInicio} a {pgpFiltrosAplicados.fechaFin}
+                    </span>
+                  </div>
+                  {datosGraficasMensualesPgp.every((d) => d.valorTotal === 0) ? (
+                    <p className="text-xs text-slate-500 text-center py-16">
+                      Sin movimientos registrados en el rango de fechas seleccionado.
+                    </p>
+                  ) : (
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={datosGraficasMensualesPgp} margin={{ top: 16, right: 4, left: -4, bottom: 4 }}>
+                          <defs>
+                            <linearGradient id="gradValorPgp" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#D81B60" stopOpacity={0.32} />
+                              <stop offset="100%" stopColor="#D81B60" stopOpacity={0.02} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid stroke="#FCE7EF" strokeDasharray="3 3" vertical={false} />
+                          <XAxis
+                            dataKey="corto"
+                            axisLine={{ stroke: "#F2C6D4" }}
+                            tickLine={false}
+                            tick={{ fill: "#475569", fontSize: 12, fontWeight: 600 }}
+                          />
+                          <YAxis
+                            width={66}
+                            axisLine={false}
+                            tickLine={false}
+                            tick={{ fill: "#64748B", fontSize: 11 }}
+                            tickFormatter={(val) =>
+                              val === 0 ? "$0" : `$${Math.round(val / 1_000_000).toLocaleString("es-CO")}M`
+                            }
+                          />
+                          <Tooltip content={<CustomTooltipValorPgp />} />
+                          <Area
+                            type="monotone"
+                            dataKey="valorTotal"
+                            stroke="#D81B60"
+                            strokeWidth={2.5}
+                            fill="url(#gradValorPgp)"
+                            animationDuration={500}
+                            dot={{ fill: "#D81B60", stroke: "#FFFFFF", strokeWidth: 3, r: 4.5 }}
+                            activeDot={{ r: 6.5, fill: "#D81B60", stroke: "#1B2A59", strokeWidth: 2 }}
+                          >
+                            <LabelList
+                              dataKey="valorTotal"
+                              position="top"
+                              offset={10}
+                              formatter={(val) =>
+                                val > 0
+                                  ? `$${Math.round(val / 1_000_000).toLocaleString("es-CO")}M`
+                                  : ""
+                              }
+                              style={{ fill: "#B81450", fontSize: 10, fontWeight: 700 }}
+                            />
+                          </Area>
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         {subVistaPgp === "MENSUAL" && (
           <section className="bg-white rounded-lg border border-[#F2C6D4] shadow-sm overflow-hidden">
@@ -766,7 +1453,7 @@ export default function App() {
                       </tr>
                     );
                   })}
-                  {resumenPgp.length === 0 && !loadingPgp && (
+                  {resumenPgp.length === 0 && !cargandoResumenPgp && (
                     <tr>
                       <td colSpan={17} className="text-center py-8 text-slate-500">
                         Sin datos para el rango seleccionado.
@@ -837,7 +1524,7 @@ export default function App() {
             />
             <div className="bg-white rounded-lg border border-[#F2C6D4] shadow-sm overflow-hidden">
               <div className="overflow-x-auto max-h-[65vh] overflow-y-auto">
-                <table className="w-full border-collapse text-xs min-w-[1100px]">
+                <table className="w-full border-collapse text-xs min-w-[1400px]">
                   <thead className="bg-[#F8E5EC] text-[#1B2A59] sticky top-0 z-10">
                     <tr>
                       <th className="border border-[#F2C6D4] px-2 py-2">Fecha</th>
@@ -849,6 +1536,9 @@ export default function App() {
                       <th className="border border-[#F2C6D4] px-2 py-2">Fuente</th>
                       <th className="border border-[#F2C6D4] px-2 py-2">Identificación</th>
                       <th className="border border-[#F2C6D4] px-2 py-2">Nombres</th>
+                      <th className="border border-[#F2C6D4] px-2 py-2">Agrupador</th>
+                      <th className="border border-[#F2C6D4] px-2 py-2">CIE-10 (dx1)</th>
+                      <th className="border border-[#F2C6D4] px-2 py-2">Diagnóstico (dx1nom)</th>
                       <th className="border border-[#F2C6D4] px-2 py-2 text-right">Total ($)</th>
                     </tr>
                   </thead>
@@ -864,12 +1554,15 @@ export default function App() {
                         <td className="border border-[#F2C6D4] px-2 py-1 text-center">{p.fuente}</td>
                         <td className="border border-[#F2C6D4] px-2 py-1 font-mono font-semibold">{p.identificacion}</td>
                         <td className="border border-[#F2C6D4] px-2 py-1">{p.nombres}</td>
+                        <td className="border border-[#F2C6D4] px-2 py-1">{p.agrupador}</td>
+                        <td className="border border-[#F2C6D4] px-2 py-1 font-mono">{p.dx1}</td>
+                        <td className="border border-[#F2C6D4] px-2 py-1">{p.dx1nom}</td>
                         <td className="border border-[#F2C6D4] px-2 py-1 text-right font-mono">{formatCOP(p.total)}</td>
                       </tr>
                     ))}
-                    {detallePacientesPagina.length === 0 && !loadingPgp && (
+                    {detallePacientesPagina.length === 0 && !cargandoDetallePgp && (
                       <tr>
-                        <td colSpan={10} className="text-center py-8 text-slate-500">
+                        <td colSpan={13} className="text-center py-8 text-slate-500">
                           Sin registros para el filtro aplicado.
                         </td>
                       </tr>
